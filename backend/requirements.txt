@@ -1,4 +1,5 @@
 pandas>=2.0.0
+numpy<2
 python-dateutil>=2.8.2
 firebase-admin>=6.5.0
 fastapi>=0.110.0

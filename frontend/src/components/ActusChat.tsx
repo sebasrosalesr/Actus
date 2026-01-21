@@ -664,8 +664,8 @@ export default function ActusChat({ userEmail, onLogout }: ActusChatProps) {
             if (Array.isArray(data.meta?.suggestions)) {
                 setPendingChoices(
                     data.meta.suggestions
-                        .filter((item: { label?: string; prefix?: string }) => item?.label && item?.prefix)
-                        .map((item: { label: string; prefix: string }) => ({
+                        .filter((item): item is { label: string; prefix: string } => Boolean(item?.label && item?.prefix))
+                        .map((item) => ({
                             label: item.label,
                             prefix: item.prefix,
                         }))

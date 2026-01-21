@@ -260,9 +260,10 @@ def user_context(email: str | None = None) -> Dict[str, Any]:
         return {"email": email}
 
     record = next(iter(snapshot.values()))
-    first_name = record.get("firstName") or record.get("first_name")
-    last_name = record.get("lastName") or record.get("last_name")
-    full_name = record.get("name") or record.get("fullName")
+    env_profile = record.get("env") if isinstance(record.get("env"), dict) else {}
+    first_name = record.get("firstName") or record.get("first_name") or env_profile.get("firstName") or env_profile.get("first_name")
+    last_name = record.get("lastName") or record.get("last_name") or env_profile.get("lastName") or env_profile.get("last_name")
+    full_name = record.get("name") or record.get("fullName") or env_profile.get("name") or env_profile.get("fullName")
     if not full_name and (first_name or last_name):
         full_name = " ".join([part for part in [first_name, last_name] if part])
     return {

@@ -1,0 +1,13 @@
+pandas>=2.0.0
+python-dateutil>=2.8.2
+firebase-admin>=6.5.0
+fastapi>=0.110.0
+uvicorn>=0.30.0
+python-dotenv>=1.0.1
+pinecone>=5.0.0
+
+# Required for reading Excel files (.xlsx)
+openpyxl>=3.1.0
+
+# Optional but recommended if you ever use .xls files
+xlrd>=2.0.1

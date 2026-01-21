@@ -1,0 +1,278 @@
+[
+  {
+    "id": "completed_credit_provided",
+    "priority": 980,
+    "when": { "flag": "has_credit_completed" },
+    "action": {
+      "next_action": "Completed (no action required).",
+      "confidence": "high",
+      "reason_codes": ["credit_completed"],
+      "tag": "completed"
+    }
+  },
+  {
+    "id": "completed_cr_number",
+    "priority": 1000,
+    "when": { "flag": "has_cr_number" },
+    "action": {
+      "next_action": "Completed (no action required).",
+      "confidence": "high",
+      "reason_codes": ["cr_number_present"],
+      "tag": "completed"
+    }
+  },
+  {
+    "id": "investigation_ppd",
+    "priority": 900,
+    "when": {
+      "all": [
+        { "flag": "has_investigation_note" },
+        { "any": [{ "signal": "ppd" }, { "signal": "non_ppd" }] }
+      ]
+    },
+    "action": {
+      "next_action": "Verify PPD coverage + effective date; confirm item list under contract; if mismatch, update pricing/contract and credit the delta. Document proof (price trace / contract record).",
+      "confidence": "high",
+      "reason_codes": ["tier_a_investigation_notes", "ppd_keywords"]
+    }
+  },
+  {
+    "id": "investigation_uom_pricing",
+    "priority": 890,
+    "when": {
+      "all": [
+        { "flag": "has_investigation_note" },
+        { "signal": "uom" },
+        { "any": [{ "signal": "loaded_incorrectly" }, { "signal": "priced_wrong" }] }
+      ]
+    },
+    "action": {
+      "next_action": "Confirm UOM mismatch (CS vs PK/EA) and correct loaded price; recalculate correct unit price; issue credit for delta; log price history evidence.",
+      "confidence": "high",
+      "reason_codes": ["tier_a_investigation_notes", "uom_pricing_error"]
+    }
+  },
+  {
+    "id": "investigation_no_documentation",
+    "priority": 880,
+    "when": {
+      "all": [{ "flag": "has_investigation_note" }, { "signal": "no_documentation" }]
+    },
+    "action": {
+      "next_action": "Request missing documentation (invoice/backup) from requestor; hold processing until received; if not received by deadline, close as 'doc missing'.",
+      "confidence": "high",
+      "reason_codes": ["tier_a_investigation_notes", "no_documentation"]
+    }
+  },
+  {
+    "id": "investigation_generic",
+    "priority": 870,
+    "when": { "flag": "has_investigation_note" },
+    "action": {
+      "next_action": "Review investigation notes evidence; confirm discrepancy; proceed with credit if justified, otherwise decline with documented rationale and close.",
+      "confidence": "high",
+      "reason_codes": ["tier_a_investigation_notes"]
+    }
+  },
+  {
+    "id": "summary_ppd_high",
+    "priority": 800,
+    "when": {
+      "all": [
+        { "flag": "has_snippets" },
+        { "flag": "has_explicit_investigation" },
+        { "any": [{ "signal": "ppd" }, { "signal": "non_ppd" }] }
+      ]
+    },
+    "action": {
+      "next_action": "Likely PPD mismatch. Verify contract/PPD coverage + effective date; confirm whether items should be PPD vs non-PPD; if mismatch confirmed, update pricing and credit difference.",
+      "confidence": "high",
+      "reason_codes": ["tier_b_summary_status", "ppd_keywords"]
+    }
+  },
+  {
+    "id": "summary_ppd_medium",
+    "priority": 790,
+    "when": {
+      "all": [
+        { "flag": "has_snippets" },
+        { "any": [{ "signal": "ppd" }, { "signal": "non_ppd" }] }
+      ]
+    },
+    "action": {
+      "next_action": "Likely PPD mismatch. Verify contract/PPD coverage + effective date; confirm whether items should be PPD vs non-PPD; if mismatch confirmed, update pricing and credit difference.",
+      "confidence": "medium",
+      "reason_codes": ["tier_b_summary_status", "ppd_keywords"]
+    }
+  },
+  {
+    "id": "summary_uom_high",
+    "priority": 780,
+    "when": {
+      "all": [
+        { "flag": "has_snippets" },
+        { "flag": "has_explicit_investigation" },
+        { "signal": "uom" },
+        { "any": [{ "signal": "priced_wrong" }, { "signal": "loaded_incorrectly" }] }
+      ]
+    },
+    "action": {
+      "next_action": "Likely pricing/UOM error. Validate UOM and correct price loaded; recompute correct unit price and credit delta; update price history if needed.",
+      "confidence": "high",
+      "reason_codes": ["tier_b_summary_status", "uom_or_loaded_incorrectly"]
+    }
+  },
+  {
+    "id": "summary_uom_medium",
+    "priority": 770,
+    "when": {
+      "all": [
+        { "flag": "has_snippets" },
+        { "signal": "uom" },
+        { "any": [{ "signal": "priced_wrong" }, { "signal": "loaded_incorrectly" }] }
+      ]
+    },
+    "action": {
+      "next_action": "Likely pricing/UOM error. Validate UOM and correct price loaded; recompute correct unit price and credit delta; update price history if needed.",
+      "confidence": "medium",
+      "reason_codes": ["tier_b_summary_status", "uom_or_loaded_incorrectly"]
+    }
+  },
+  {
+    "id": "summary_no_documentation_high",
+    "priority": 760,
+    "when": {
+      "all": [
+        { "flag": "has_snippets" },
+        { "flag": "has_explicit_investigation" },
+        { "signal": "no_documentation" }
+      ]
+    },
+    "action": {
+      "next_action": "No documentation found. Ask requestor for invoice/support; set follow-up date; close if no response.",
+      "confidence": "high",
+      "reason_codes": ["tier_b_summary_status", "no_documentation"]
+    }
+  },
+  {
+    "id": "summary_no_documentation_medium",
+    "priority": 750,
+    "when": {
+      "all": [{ "flag": "has_snippets" }, { "signal": "no_documentation" }]
+    },
+    "action": {
+      "next_action": "No documentation found. Ask requestor for invoice/support; set follow-up date; close if no response.",
+      "confidence": "medium",
+      "reason_codes": ["tier_b_summary_status", "no_documentation"]
+    }
+  },
+  {
+    "id": "summary_waiting_high",
+    "priority": 740,
+    "when": {
+      "all": [
+        { "flag": "has_snippets" },
+        { "flag": "has_explicit_investigation" },
+        { "signal": "waiting" }
+      ]
+    },
+    "action": {
+      "next_action": "Waiting on info/approval. Follow up with owner/requestor; capture what is missing; set deadline.",
+      "confidence": "high",
+      "reason_codes": ["tier_b_summary_status", "waiting_on_response"]
+    }
+  },
+  {
+    "id": "summary_waiting_medium",
+    "priority": 730,
+    "when": {
+      "all": [{ "flag": "has_snippets" }, { "signal": "waiting" }]
+    },
+    "action": {
+      "next_action": "Waiting on info/approval. Follow up with owner/requestor; capture what is missing; set deadline.",
+      "confidence": "medium",
+      "reason_codes": ["tier_b_summary_status", "waiting_on_response"]
+    }
+  },
+  {
+    "id": "summary_stale_low",
+    "priority": 720,
+    "when": {
+      "all": [
+        { "flag": "has_snippets" },
+        { "field": "age_days", "op": "gt", "value": 30 },
+        {
+          "any": [
+            { "flag": "credit_amount_missing" },
+            { "field": "credit_amount", "op": "lt", "value": 25 }
+          ]
+        }
+      ]
+    },
+    "action": {
+      "next_action": "Stale + low impact. Consider closing candidate after final follow-up; add note documenting rationale.",
+      "confidence": "medium",
+      "reason_codes": ["tier_b_summary_status", "stale_30d", "low_amount"]
+    }
+  },
+  {
+    "id": "summary_investigation_high",
+    "priority": 710,
+    "when": {
+      "all": [
+        { "flag": "has_snippets" },
+        { "flag": "has_explicit_investigation" },
+        { "flag": "has_investigation" }
+      ]
+    },
+    "action": {
+      "next_action": "Review existing investigation evidence and decide approve/decline; if more proof is needed, request the missing document.",
+      "confidence": "high",
+      "reason_codes": ["tier_b_summary_status", "investigation_present"]
+    }
+  },
+  {
+    "id": "summary_investigation_medium",
+    "priority": 700,
+    "when": {
+      "all": [{ "flag": "has_snippets" }, { "flag": "has_investigation" }]
+    },
+    "action": {
+      "next_action": "Review existing investigation evidence and decide approve/decline; if more proof is needed, request the missing document.",
+      "confidence": "medium",
+      "reason_codes": ["tier_b_summary_status", "investigation_present"]
+    }
+  },
+  {
+    "id": "summary_default_high",
+    "priority": 690,
+    "when": {
+      "all": [{ "flag": "has_snippets" }, { "flag": "has_explicit_investigation" }]
+    },
+    "action": {
+      "next_action": "Review status + summary evidence; add investigation note capturing discrepancy and proof; then proceed approve/decline accordingly.",
+      "confidence": "high",
+      "reason_codes": ["tier_b_summary_status"]
+    }
+  },
+  {
+    "id": "summary_default_medium",
+    "priority": 680,
+    "when": { "flag": "has_snippets" },
+    "action": {
+      "next_action": "Review status + summary evidence; add investigation note capturing discrepancy and proof; then proceed approve/decline accordingly.",
+      "confidence": "medium",
+      "reason_codes": ["tier_b_summary_status"]
+    }
+  },
+  {
+    "id": "catch_all",
+    "priority": 0,
+    "when": { "flag": "always" },
+    "action": {
+      "next_action": "Needs investigation note. Add a short note (what happened / evidence / next step) or follow up with requestor for missing details.",
+      "confidence": "low",
+      "reason_codes": ["tier_c_minimal"]
+    }
+  }
+]

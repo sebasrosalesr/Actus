@@ -239,7 +239,6 @@ export default function ActusChat({ userEmail, onLogout }: ActusChatProps) {
         }));
         const controller = new AbortController();
         const loadUserContext = async () => {
-            setUserContextStatus({ status: 'loading' });
             try {
                 const endpoint = apiBase
                     ? `${apiBase}/api/user-context?email=${encodeURIComponent(resolvedUserEmail)}`
@@ -286,18 +285,6 @@ export default function ActusChat({ userEmail, onLogout }: ActusChatProps) {
                     location: payload.location || 'Unknown location',
                     lastLogin: formatLoginTime(payload.last_login),
                 });
-                setUserContextStatus({
-                    status: 'ok',
-                    payload: {
-                        email: payload.email,
-                        name: payload.name,
-                        first_name: payload.first_name,
-                        last_name: payload.last_name,
-                        firstName: payload.firstName,
-                        lastName: payload.lastName,
-                        last_login: payload.last_login,
-                    },
-                });
             } catch (error) {
                 if (error instanceof DOMException && error.name === 'AbortError') {
                     return;
@@ -308,10 +295,6 @@ export default function ActusChat({ userEmail, onLogout }: ActusChatProps) {
                     name: '',
                     firstName: '',
                 }));
-                setUserContextStatus({
-                    status: 'error',
-                    detail: error instanceof Error ? error.message : 'Unknown error',
-                });
             }
         };
         loadUserContext();

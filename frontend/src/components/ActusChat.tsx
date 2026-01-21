@@ -102,7 +102,11 @@ export default function ActusChat({ userEmail, onLogout }: ActusChatProps) {
         return `${Date.now()}-${Math.random().toString(16).slice(2)}`;
     };
 
-    const apiBase = (import.meta.env.VITE_API_BASE as string | undefined)?.replace(/\/$/, '') ?? '';
+    const apiBase = (
+        (import.meta.env.VITE_API_BASE_URL as string | undefined) ??
+        (import.meta.env.VITE_API_BASE as string | undefined) ??
+        ''
+    ).replace(/\/$/, '');
     const [messages, setMessages] = useState<Message[]>([]);
     const [input, setInput] = useState('');
     const [isTyping, setIsTyping] = useState(false);
@@ -181,19 +185,7 @@ export default function ActusChat({ userEmail, onLogout }: ActusChatProps) {
         location: fallbackUserContext.location,
         lastLogin: fallbackUserContext.lastLogin,
     });
-    const [userContextStatus, setUserContextStatus] = useState<{
-        status: 'idle' | 'loading' | 'ok' | 'error';
-        detail?: string;
-        payload?: {
-            email?: string;
-            name?: string;
-            first_name?: string;
-            last_name?: string;
-            firstName?: string;
-            lastName?: string;
-            last_login?: number | string;
-        };
-    }>({ status: 'idle' });
+    type RootCausePayload = NonNullable<Message['meta']>['rootCauses'];
     const resolvedUserEmail =
         userEmail ||
         localStorage.getItem('actusUserEmail') ||
@@ -407,11 +399,11 @@ export default function ActusChat({ userEmail, onLogout }: ActusChatProps) {
         </div>
     );
 
-    const toRootCauseItems = (payload?: Message['meta']['rootCauses']): RootCauseItem[] => {
+    const toRootCauseItems = (payload?: RootCausePayload): RootCauseItem[] => {
         if (!payload?.data?.length) {
             return [];
         }
-        return payload.data.map((item, index) => ({
+        return payload.data.map((item: RootCausePayload['data'][number], index) => ({
             rank: index + 1,
             rootCause: item.root_cause || 'Unspecified',
             creditRequestTotal: Number(item.credit_request_total || 0),

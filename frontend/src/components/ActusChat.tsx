@@ -64,6 +64,16 @@ export default function ActusChat({ userEmail, onLogout }: ActusChatProps) {
         rows?: Record<string, unknown>[];
         creditTrends?: CreditTrendsData; // New field for trends dashboard
         meta?: {
+            follow_up?: {
+                intent?: string;
+                prefix?: string;
+            };
+            suggestions?: Array<{
+                id?: string;
+                label?: string;
+                prefix?: string;
+                confidence?: number;
+            }>;
             show_table?: boolean;
             csv_filename?: string;
             csv_rows?: Record<string, unknown>[];
@@ -185,7 +195,7 @@ export default function ActusChat({ userEmail, onLogout }: ActusChatProps) {
         location: fallbackUserContext.location,
         lastLogin: fallbackUserContext.lastLogin,
     });
-    type RootCausePayload = NonNullable<Message['meta']>['rootCauses'];
+    type RootCausePayload = NonNullable<NonNullable<Message['meta']>['rootCauses']>;
     const resolvedUserEmail =
         userEmail ||
         localStorage.getItem('actusUserEmail') ||
@@ -383,10 +393,11 @@ export default function ActusChat({ userEmail, onLogout }: ActusChatProps) {
     );
 
     const toRootCauseItems = (payload?: RootCausePayload): RootCauseItem[] => {
-        if (!payload?.data?.length) {
+        const data = payload?.data ?? [];
+        if (!data.length) {
             return [];
         }
-        return payload.data.map((item: RootCausePayload['data'][number], index) => ({
+        return data.map((item: RootCausePayload['data'][number], index) => ({
             rank: index + 1,
             rootCause: item.root_cause || 'Unspecified',
             creditRequestTotal: Number(item.credit_request_total || 0),

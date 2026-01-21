@@ -29,6 +29,7 @@ type RagResult = {
     resolution?: {
       status?: string;
       method?: string;
+      credit_numbers?: string[];
       credit_number?: string;
       credit_date?: string;
       amount?: number;
@@ -295,7 +296,7 @@ export function RagResults({
       </div>
 
         <div className="flex flex-col gap-4">
-        {results.map((r, idx) => {
+        {results.map((r) => {
           const summarySnippet =
             (r.snippets ?? []).find((s) => s.chunk_type === "summary") ?? r.snippets?.[0];
           const evidenceSnippets = (r.snippets ?? []).filter((s) => s !== summarySnippet);
@@ -319,7 +320,7 @@ export function RagResults({
           const isCompleted = r.action_tag === "completed";
           const closureNote = r.meta?.terminal_decision ? r.meta?.closure_note : null;
           const rootCause = r.root_cause;
-          const creditNumbers =
+          const creditNumbers: string[] =
             r.meta?.resolution?.credit_numbers && r.meta?.resolution?.credit_numbers.length > 0
               ? r.meta?.resolution?.credit_numbers
               : r.meta?.resolution?.credit_number
@@ -568,7 +569,7 @@ export function RagResults({
                         </span>
                       </div>
                       <div className="flex flex-wrap gap-2">
-                        {crVisible.map((cr) => (
+                        {crVisible.map((cr: string) => (
                           <span
                             key={cr}
                             className="px-2.5 py-1 rounded bg-slate-800/50 border border-white/5 text-xs font-mono text-cyan-300/90 hover:border-cyan-500/30 transition-colors cursor-default"

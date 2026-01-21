@@ -208,7 +208,9 @@ def _rag_rebuild_loop(interval_sec: int) -> None:
     _RAG_REBUILD_STOP.wait(timeout=5)
     while not _RAG_REBUILD_STOP.is_set():
         try:
+            print("[rag] rebuild started")
             build_rag_index.main()
+            print("[rag] rebuild finished")
         except Exception as exc:
             print(f"[rag] rebuild failed: {exc}")
         _RAG_REBUILD_STOP.wait(timeout=interval_sec)

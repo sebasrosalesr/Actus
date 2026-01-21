@@ -31,4 +31,6 @@ backend/rag_data/
 # Local secrets
 backend/.env
 backend/.env.*
+frontend/.env
+frontend/.env.*
 creditapp-*-firebase-adminsdk-*.json

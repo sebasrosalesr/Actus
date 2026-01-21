@@ -46,6 +46,26 @@ def intent_ticket_status(query, df):
     ticket_digits = ticket_series.str.replace(r"\D", "", regex=True)
     df = df.copy()
     df["Ticket Number"] = ticket_series
+    columns = [
+        "Date",
+        "Ticket Number",
+        "Customer Number",
+        "Invoice Number",
+        "Item Number",
+        "QTY",
+        "Unit Price",
+        "Corrected Unit Price",
+        "Credit Type",
+        "Credit Request Total",
+        "Issue Type",
+        "Reason for Credit",
+        "Requested By",
+        "EDI Service Provider",
+        "Status",
+        "RTN_CR_No",
+        "Type",
+        "Sales Rep",
+    ]
 
     if len(tickets) > 1:
         found_rows = []
@@ -91,26 +111,7 @@ def intent_ticket_status(query, df):
             "show_table": True,
             "csv_filename": "ticket_status_snapshot.csv",
             "csv_rows": full_df,
-            "columns": [
-                "Date",
-                "Ticket Number",
-                "Customer Number",
-                "Invoice Number",
-                "Item Number",
-                "QTY",
-                "Unit Price",
-                "Corrected Unit Price",
-                "Credit Type",
-                "Credit Request Total",
-                "Issue Type",
-                "Reason for Credit",
-                "Requested By",
-                "EDI Service Provider",
-                "Status",
-                "RTN_CR_No",
-                "Type",
-                "Sales Rep",
-            ],
+            "columns": columns,
         }
 
     ticket = tickets[0]
@@ -140,4 +141,10 @@ def intent_ticket_status(query, df):
         f"({len(all_rows)} entries, first seen {date_str})."
     )
 
-    return message, subset
+    return message, subset, {
+        "show_table": True,
+        "csv_filename": "ticket_status_snapshot.csv",
+        "csv_rows": all_rows,
+        "columns": columns,
+        "csv_row_count": len(all_rows),
+    }

@@ -6,7 +6,10 @@ type LoginProps = {
 };
 
 const Login: React.FC<LoginProps> = ({ onLogin }) => {
-    const apiBase = (import.meta.env.VITE_API_BASE as string | undefined)?.replace(/\/$/, '') ?? '';
+    const apiBase = (
+        (import.meta.env.VITE_API_BASE_URL as string | undefined)
+        || (import.meta.env.VITE_API_BASE as string | undefined)
+    )?.replace(/\/$/, '') ?? '';
     const [email, setEmail] = useState('');
     const [password, setPassword] = useState('');
     const [isLoading, setIsLoading] = useState(false);

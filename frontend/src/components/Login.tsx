@@ -13,6 +13,10 @@ const Login: React.FC<LoginProps> = ({ onLogin }) => {
     const [isSuccess, setIsSuccess] = useState(false);
     const [showGreeting, setShowGreeting] = useState(false);
     const [greetingName, setGreetingName] = useState('');
+    const envFirstName =
+        (import.meta.env.VITE_USER_FIRST_NAME as string | undefined)
+        || (import.meta.env.VITE_USER_NAME as string | undefined)
+        || '';
 
     const nameFromEmail = (value: string) => {
         const base = value.split('@')[0] || '';
@@ -66,7 +70,7 @@ const Login: React.FC<LoginProps> = ({ onLogin }) => {
             // Fallback to email-derived name if lookup fails.
         }
 
-        setGreetingName(resolvedFirstName || nameFromEmail(trimmedEmail));
+        setGreetingName(resolvedFirstName || envFirstName || nameFromEmail(trimmedEmail));
         setTimeout(() => {
             setIsLoading(false);
             setIsSuccess(true);

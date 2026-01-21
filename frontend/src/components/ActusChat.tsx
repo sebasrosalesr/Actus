@@ -227,6 +227,11 @@ export default function ActusChat({ userEmail, onLogout }: ActusChatProps) {
     };
 
     const nameFromEmail = (email: string) => {
+        const envName = (import.meta.env.VITE_USER_NAME as string | undefined)
+            || (import.meta.env.VITE_USER_FIRST_NAME as string | undefined);
+        if (envName) {
+            return envName;
+        }
         const base = email.split('@')[0] || '';
         if (!base) {
             return fallbackUserContext.name;

@@ -93,7 +93,7 @@ function compactSnippet(text: string, maxLen = 220) {
 }
 
 export function RagResults({
-  apiBase = import.meta.env.VITE_API_BASE ?? "http://127.0.0.1:8000",
+  apiBase = import.meta.env.VITE_API_BASE_URL ?? import.meta.env.VITE_API_BASE ?? "http://127.0.0.1:8000",
 }: {
   apiBase?: string;
 }) {

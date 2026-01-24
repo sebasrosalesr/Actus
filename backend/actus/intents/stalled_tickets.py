@@ -2,6 +2,10 @@ import re
 from datetime import timedelta
 import pandas as pd
 
+from actus.intents._time_reasoning import (
+    enrich_time_reasoning,
+    summarize_time_reasoning,
+)
 from actus.utils.df_cleaning import coerce_date
 from actus.utils.formatting import format_money
 
@@ -32,10 +36,11 @@ def _ensure_update_timestamp(dv: pd.DataFrame) -> pd.DataFrame:
     dv["Status"] = dv["Status"].astype(str)
 
     ts_pattern = r"\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\]"
-    dv["Update Timestamp"] = dv["Status"].str.extract(ts_pattern)[0]
-    dv["Update Timestamp"] = pd.to_datetime(
-        dv["Update Timestamp"], errors="coerce"
+    all_ts = dv["Status"].str.findall(ts_pattern)
+    dv["Update Timestamp"] = all_ts.apply(
+        lambda xs: xs[-1] if isinstance(xs, list) and xs else None
     )
+    dv["Update Timestamp"] = pd.to_datetime(dv["Update Timestamp"], errors="coerce")
     return dv
 
 
@@ -60,7 +65,9 @@ def _latest_status(value: str) -> str:
     return text
 
 
-def intent_stalled_tickets(query: str, df: pd.DataFrame):
+def intent_stalled_tickets(
+    query: str, df: pd.DataFrame
+) -> tuple[str, pd.DataFrame, dict] | str | None:
     """
     Handle queries like:
       - "SkyBar, which tickets are stalled?"
@@ -176,6 +183,16 @@ def intent_stalled_tickets(query: str, df: pd.DataFrame):
         .reindex([f"{stalled_days}–{stalled_days + 7}", "15–30", "30+"], fill_value=0)
     )
 
+    stalled_df["Latest Status"] = stalled_df["Status"].map(_latest_status)
+
+    # Alias columns for time_reasoning module compatibility
+    stalled_df["Days_Open"] = stalled_df.get("Days Open", 0)
+    stalled_df["Days_Since_Last_Status"] = stalled_df["Days Since Update"]
+    stalled_df["Last_Status_Message"] = stalled_df["Latest Status"].astype(str)
+
+    stalled_df = enrich_time_reasoning(stalled_df)
+    time_summary = summarize_time_reasoning(stalled_df)
+
     lines: list[str] = [
         f"Stalled tickets snapshot (no credit number, no updates for **{stalled_days}+ days**):",
         f"- Total stalled tickets: **{total_stalled:,}**",
@@ -190,10 +207,16 @@ def intent_stalled_tickets(query: str, df: pd.DataFrame):
         f"- **30+ days**: {int(bucket_counts['30+'])} ticket(s) "
         f"({format_money(bucket_exposure['30+'])})",
         "",
+        "Time reasoning highlights:",
+        f"- Aging not submitted: "
+        f"{time_summary.get('follow_up_intent_counts', {}).get('I08_FLAG_AGING_NOT_SUBMITTED', 0)}",
+        f"- Billing queue delay: "
+        f"{time_summary.get('follow_up_intent_counts', {}).get('I04_CHECK_BILLING_QUEUE', 0)}",
+        f"- Stale investigation: "
+        f"{time_summary.get('follow_up_intent_counts', {}).get('I03_ESCALATE_STALE_INVESTIGATION', 0)}",
+        "",
         "Here is a preview of the results.",
     ]
-
-    stalled_df["Latest Status"] = stalled_df["Status"].map(_latest_status)
 
     preview = (
         stalled_df[
@@ -204,13 +227,18 @@ def intent_stalled_tickets(query: str, df: pd.DataFrame):
                 "Days Since Update",
                 "Days Open",
                 "Latest Status",
+                "Macro_Phase",
+                "Delay_Reason",
+                "Follow_Up_Intent",
+                "Delay_Score",
+                "Checkpoint_At",
                 "Credit Request Total",
                 "RTN_CR_No",
                 "Reason for Credit",
             ]
         ]
         .sort_values(["Days Since Update", "Days Open"], ascending=False)
-        .head(20)
+        .head(60)
         .copy()
     )
 
@@ -229,6 +257,11 @@ def intent_stalled_tickets(query: str, df: pd.DataFrame):
                 "Days Since Update",
                 "Days Open",
                 "Latest Status",
+                "Macro_Phase",
+                "Delay_Reason",
+                "Follow_Up_Intent",
+                "Delay_Score",
+                "Checkpoint_At",
                 "Credit Request Total",
                 "RTN_CR_No",
                 "Reason for Credit",

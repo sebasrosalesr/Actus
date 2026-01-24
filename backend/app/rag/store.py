@@ -6,7 +6,10 @@ import sqlite3
 from pathlib import Path
 from typing import Any, Iterable, Optional
 
-import faiss
+try:
+    import faiss  # type: ignore
+except Exception:  # pragma: no cover - optional dependency for local FAISS
+    faiss = None  # type: ignore
 import numpy as np
 
 from app.rag.embeddings import embed_texts
@@ -94,6 +97,8 @@ class RagStore:
         self._open()
         self._ensure_schema()
 
+        if faiss is None:
+            raise RuntimeError("faiss is not installed. Install faiss-cpu to use the local RAG store.")
         self.index = self._load_or_create_index()
 
     def _ensure_schema(self) -> None:
@@ -128,7 +133,7 @@ class RagStore:
             self._conn = None
             self._open()
 
-    def _load_or_create_index(self) -> faiss.IndexIDMap2:
+    def _load_or_create_index(self) -> Any:
         if self.index_path.exists():
             index = faiss.read_index(str(self.index_path))
             if not isinstance(index, faiss.IndexIDMap2):

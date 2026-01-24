@@ -184,6 +184,14 @@ def intent_stalled_tickets(
     )
 
     stalled_df["Latest Status"] = stalled_df["Status"].map(_latest_status)
+    if "Status" not in stalled_df.columns:
+        stalled_df["Status"] = stalled_df["Latest Status"]
+    else:
+        status_text = stalled_df["Status"].astype(str).str.strip()
+        missing_status = status_text.isna() | (status_text == "") | (
+            status_text.str.upper().isin(["N/A", "NONE", "NULL", "NAN"])
+        )
+        stalled_df.loc[missing_status, "Status"] = stalled_df["Latest Status"]
 
     # Alias columns for time_reasoning module compatibility
     stalled_df["Days_Open"] = stalled_df.get("Days Open", 0)
@@ -219,7 +227,7 @@ def intent_stalled_tickets(
     ]
 
     preview = (
-        stalled_df[
+        stalled_df.assign(Status=stalled_df["Latest Status"])[
             [
                 "Update Timestamp",
                 "Ticket Number",
@@ -227,6 +235,7 @@ def intent_stalled_tickets(
                 "Days Since Update",
                 "Days Open",
                 "Latest Status",
+                "Status",
                 "Macro_Phase",
                 "Delay_Reason",
                 "Follow_Up_Intent",

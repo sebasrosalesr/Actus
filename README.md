@@ -7,22 +7,24 @@ Monorepo with a React frontend and a Python backend API for the Actus agent orch
 - `backend/` Python service (FastAPI + Actus intent router)
 - `frontend/` React UI (Vite)
 
-## Tech specs
+## Tech specs (business-friendly)
 
-Frontend:
-- React 19 + TypeScript 5.9
-- Vite 7
-- Tailwind CSS 3.4
-- react-markdown + remark-gfm
-- lucide-react
+Actus combines a fast, modern web UI with a reliable backend that connects to your operational data. The stack is chosen to keep the product responsive for users while staying dependable and easy to maintain for the team.
 
-Backend:
-- Python (FastAPI)
-- Uvicorn
-- pandas
-- Firebase Admin SDK (RTDB)
-- python-dateutil, python-dotenv
-- openpyxl (xlsx), optional xlrd (xls)
+Frontend (user experience):
+- React 19 + TypeScript 5.9 for a safe, polished UI
+- Vite 7 for fast iteration and builds
+- Tailwind CSS 3.4 for consistent design
+- react-markdown + remark-gfm for rich ticket summaries
+- lucide-react for clean, consistent icons
+
+Backend (data + automation):
+- Python (FastAPI) for a robust API and intent routing
+- Uvicorn for high-performance serving
+- pandas for analytics and ticket enrichment
+- Firebase Admin SDK (RTDB) for real-time data access
+- python-dateutil, python-dotenv for configuration and date handling
+- openpyxl (xlsx), optional xlrd (xls) for spreadsheet imports
 
 ## Backend setup
 
@@ -74,7 +76,7 @@ export ACTUS_OPENROUTER_MODE="fallback"
 Run the API:
 
 ```bash
-uvicorn app:APP --reload --port 8000
+uvicorn main:APP --reload --port 8000
 ```
 
 ## RAG health checks

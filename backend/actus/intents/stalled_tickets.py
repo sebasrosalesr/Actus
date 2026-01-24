@@ -60,8 +60,9 @@ def _latest_status(value: str) -> str:
         re.finditer(r"(?:\[)?(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\]?", text)
     )
     if matches:
-        start = matches[-1].start()
-        return text[start:].strip()
+        end = matches[-1].end()
+        cleaned = text[end:].strip()
+        return cleaned or "N/A"
     return text
 
 

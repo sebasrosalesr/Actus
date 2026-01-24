@@ -147,6 +147,19 @@ def intent_stalled_tickets(
             f"stalled for **{stalled_days}+** days."
         )
 
+    if "Ticket Number" in stalled_df.columns:
+        credit_numeric = pd.to_numeric(
+            stalled_df.get("Credit Request Total"), errors="coerce"
+        ).fillna(0.0)
+        per_ticket_total = (
+            stalled_df.assign(_credit_total=credit_numeric)
+            .groupby("Ticket Number")["_credit_total"]
+            .sum()
+        )
+        stalled_df["Credit Request Total"] = stalled_df["Ticket Number"].map(
+            per_ticket_total
+        )
+
     # Deduplicate by ticket to avoid repeated rows
     if "Ticket Number" in stalled_df.columns:
         stalled_df = stalled_df.sort_values("Update Timestamp", ascending=False)

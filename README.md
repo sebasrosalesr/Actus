@@ -1,6 +1,6 @@
 # Actus
 
-Monorepo with a React frontend and a Python backend API for the Actus agent orchestration system.
+Monorepo with a React frontend and a Python FastAPI backend for the Actus agent orchestration system.
 
 ## Structure
 
@@ -73,11 +73,25 @@ export ACTUS_OPENROUTER_MODEL="openai/gpt-4o-mini"
 export ACTUS_OPENROUTER_MODE="fallback"
 ```
 
-Run the API:
+## Run locally
+
+Backend:
 
 ```bash
+cd backend
+set -a; source .env; set +a
 uvicorn main:APP --reload --port 8000
 ```
+
+Frontend:
+
+```bash
+cd frontend
+npm install
+npm run dev
+```
+
+The dev server proxies `/api` to `http://localhost:8000`.
 
 ## RAG health checks
 
@@ -145,12 +159,6 @@ Example response (trimmed):
 }
 ```
 
-## Frontend setup
+## Additional docs
 
-```bash
-cd frontend
-npm install
-npm run dev
-```
-
-The dev server proxies `/api` to `http://localhost:8000`.
+For commercial positioning and launch messaging, see `Commercial_README.md`.

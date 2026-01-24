@@ -1,0 +1,28 @@
+# fly.toml app configuration file generated for actus-app-hidden-wildflower-603 on 2026-01-20T23:46:19-05:00
+#
+# See https://fly.io/docs/reference/configuration/ for information about how to use this file.
+#
+
+app = 'actus-app'
+primary_region = 'lax'
+
+[build]
+  dockerfile = "Dockerfile"
+
+[processes]
+  app = ".venv/bin/uvicorn main:APP --host 0.0.0.0 --port 8000"
+
+[http_service]
+  internal_port = 8000
+  force_https = true
+  auto_stop_machines = 'off'
+  auto_start_machines = true
+  min_machines_running = 1
+  grace_period = "300s"
+  processes = ['app']
+
+[[vm]]
+  memory = '1gb'
+  cpu_kind = 'shared'
+  cpus = 1
+  memory_mb = 1024

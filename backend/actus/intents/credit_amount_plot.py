@@ -99,8 +99,9 @@ def _parse_window(query: str) -> tuple[pd.Timestamp | None, pd.Timestamp | None,
     m = re.search(r"(?:last|past)\s+(\d+)\s+month", q_low)
     if m:
         months = int(m.group(1))
-        start = today - pd.DateOffset(months=months)
-        return start, now, f"last {months} months"
+        # Use calendar-month start for clearer month buckets (full prior months + current MTD).
+        start = (today - pd.DateOffset(months=months)).replace(day=1)
+        return start, now, f"last {months} months (from {start.date()} to today)"
 
     m = re.search(r"(?:from\s+)?(\d+)\s+months?\s+ago", q_low)
     if m:
@@ -123,8 +124,8 @@ def _parse_window(query: str) -> tuple[pd.Timestamp | None, pd.Timestamp | None,
     m = re.search(r"last\s+(\d+)\s+month", q_low)
     if m:
         months = int(m.group(1))
-        start = today - pd.Timedelta(days=months * 30)
-        return start, now, f"last {months} months"
+        start = (today - pd.DateOffset(months=months)).replace(day=1)
+        return start, now, f"last {months} months (from {start.date()} to today)"
 
     if "last week" in q_low:
         start = today - pd.Timedelta(days=7)

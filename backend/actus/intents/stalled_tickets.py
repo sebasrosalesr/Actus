@@ -213,6 +213,8 @@ def intent_stalled_tickets(
     stalled_df["Last_Status_Message"] = stalled_df["Latest Status"].astype(str)
 
     stalled_df = enrich_time_reasoning(stalled_df)
+    if "Delay_Score" in stalled_df.columns:
+        stalled_df["Delay_Score"] = stalled_df["Delay_Score"].round(1)
     time_summary = summarize_time_reasoning(stalled_df)
 
     lines: list[str] = [

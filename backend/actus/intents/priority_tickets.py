@@ -1,6 +1,10 @@
 import pandas as pd
 import re
 
+from actus.intents._time_reasoning import (
+    enrich_time_reasoning,
+    summarize_time_reasoning,
+)
 from actus.utils.df_cleaning import coerce_date
 from actus.utils.formatting import format_money
 
@@ -130,6 +134,16 @@ def intent_priority_tickets(query: str, df: pd.DataFrame):
         dv.get("Credit Request Total"), errors="coerce"
     ).fillna(0)
 
+    # Alias columns for time_reasoning module compatibility
+    dv["Days_Open"] = dv.get("Days Open", 0)
+    dv["Days_Since_Last_Status"] = dv["Days Since Last Status"]
+    dv["Last_Status_Message"] = dv["Latest Status"].astype(str)
+
+    dv = enrich_time_reasoning(dv)
+    if "Delay_Score" in dv.columns:
+        dv["Delay_Score"] = dv["Delay_Score"].round(1)
+    time_summary = summarize_time_reasoning(dv)
+
     # Define aging buckets
     bins = [0, 7, 15, 30, 60, 90, 10**9]
     labels = ["0–7", "8–15", "16–30", "31–60", "61–90", "90+"]
@@ -191,6 +205,14 @@ def intent_priority_tickets(query: str, df: pd.DataFrame):
             f"- Highest exposure bucket: **{top_bucket} days** "
             f"({top_bucket_count} ticket(s), {top_bucket_exposure})",
             "",
+            "Time reasoning highlights:",
+            f"- Aging not submitted: "
+            f"{time_summary.get('follow_up_intent_counts', {}).get('I08_FLAG_AGING_NOT_SUBMITTED', 0)}",
+            f"- Billing queue delay: "
+            f"{time_summary.get('follow_up_intent_counts', {}).get('I04_CHECK_BILLING_QUEUE', 0)}",
+            f"- Stale investigation: "
+            f"{time_summary.get('follow_up_intent_counts', {}).get('I03_ESCALATE_STALE_INVESTIGATION', 0)}",
+            "",
             "Here is a preview of the results.",
         ]
     )
@@ -204,6 +226,11 @@ def intent_priority_tickets(query: str, df: pd.DataFrame):
                 "Days Open",
                 "Days Since Last Status",
                 "Latest Status",
+                "Macro_Phase",
+                "Delay_Reason",
+                "Follow_Up_Intent",
+                "Delay_Score",
+                "Checkpoint_At",
                 "Credit Request Total",
                 "RTN_CR_No",
                 "Reason for Credit",
@@ -228,6 +255,11 @@ def intent_priority_tickets(query: str, df: pd.DataFrame):
                 "Days Open",
                 "Days Since Last Status",
                 "Latest Status",
+                "Macro_Phase",
+                "Delay_Reason",
+                "Follow_Up_Intent",
+                "Delay_Score",
+                "Checkpoint_At",
                 "Credit Request Total",
                 "RTN_CR_No",
                 "Reason for Credit",

@@ -428,6 +428,13 @@ def intent_credit_ops_snapshot(query: str, df: pd.DataFrame):
         .reset_index(drop=True)
     )
 
+    date_series = pd.to_datetime(out.get("Date"), errors="coerce")
+    try:
+        date_series = date_series.dt.tz_localize(None)
+    except Exception:
+        pass
+    out["Date"] = date_series.dt.strftime("%Y-%m-%d").fillna("")
+
     if out.empty:
         return f"I don't see any records in the window ({window_label})."
 

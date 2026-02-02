@@ -51,13 +51,23 @@ def intent_credit_trends(query: str, df: pd.DataFrame):
     if dv.empty:
         return "I don't have enough dated records to analyze trends."
 
-    # Last 60 days split into 2 windows of 30
+    # Last 60 days split into 2 windows of 30.
+    # If the latest record is mid-month, align the previous window to the
+    # end of the prior month so the previous period represents a full month-end.
     latest = dv["Date"].max().normalize()
-    cutoff_30 = latest - pd.Timedelta(days=30)
-    cutoff_prev = cutoff_30 - pd.Timedelta(days=30)
+    if latest.day != latest.days_in_month:
+        prev_end = (latest.replace(day=1) - pd.Timedelta(days=1)).normalize()
+        prev_start = prev_end - pd.Timedelta(days=30)
+        current_start = prev_end + pd.Timedelta(days=1)
+        current_end = latest
+    else:
+        current_end = latest
+        current_start = latest - pd.Timedelta(days=30)
+        prev_end = current_start - pd.Timedelta(days=1)
+        prev_start = prev_end - pd.Timedelta(days=30)
 
-    last_30 = dv[dv["Date"].between(cutoff_30, latest)].copy()
-    prev_30 = dv[dv["Date"].between(cutoff_prev, cutoff_30 - pd.Timedelta(days=1))].copy()
+    last_30 = dv[dv["Date"].between(current_start, current_end)].copy()
+    prev_30 = dv[dv["Date"].between(prev_start, prev_end)].copy()
 
     if last_30.empty or prev_30.empty:
         return (
@@ -164,8 +174,8 @@ def intent_credit_trends(query: str, df: pd.DataFrame):
     credit_trends = {
         "period": period,
         "window": {
-            "previous": f"{cutoff_prev.date()} → {(cutoff_30 - pd.Timedelta(days=1)).date()}",
-            "current": f"{cutoff_30.date()} → {latest.date()}",
+            "previous": f"{prev_start.date()} → {prev_end.date()}",
+            "current": f"{current_start.date()} → {current_end.date()}",
         },
         "metrics": [
             {
@@ -224,8 +234,8 @@ def intent_credit_trends(query: str, df: pd.DataFrame):
 
     message = (
         "Here is the **Credit Trends Analysis** for the requested period.\n\n"
-        f"- Previous 30 days: {cutoff_prev.date()} → {(cutoff_30 - pd.Timedelta(days=1)).date()}\n"
-        f"- Last 30 days: {cutoff_30.date()} → {latest.date()}"
+        f"- Previous 30 days: {prev_start.date()} → {prev_end.date()}\n"
+        f"- Last 30 days: {current_start.date()} → {current_end.date()}"
     )
 
     return message, None, {"creditTrends": credit_trends}

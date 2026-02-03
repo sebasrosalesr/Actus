@@ -27,7 +27,8 @@ def _no_rtn_mask(dv: pd.DataFrame) -> pd.Series:
 
     # 1) Normalize RTN_CR_No column if present
     if col in dv.columns:
-        rtn_series = dv[col].astype(str).str.strip()
+        # Treat nulls/NaNs as empty so they are counted as missing.
+        rtn_series = dv[col].fillna("").astype(str).str.strip()
     else:
         rtn_series = pd.Series("", index=dv.index)
 

@@ -25,8 +25,8 @@ def _extract_ticket_ids(query: str) -> list[str]:
 
 
 def _has_rtn(series: pd.Series) -> pd.Series:
-    raw = series.astype(str).str.strip().str.upper()
-    return raw.ne("") & ~raw.isin(["NAN", "NONE", "NULL"])
+    raw = series.fillna("").astype(str).str.strip().str.upper()
+    return raw.ne("") & ~raw.isin(["NAN", "NONE", "NULL", "NA"])
 
 
 def intent_mixed_lines(query: str, df: pd.DataFrame):

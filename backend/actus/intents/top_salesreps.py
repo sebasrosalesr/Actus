@@ -79,7 +79,7 @@ def intent_top_salesreps(query: str, df: pd.DataFrame):
     # --- If query sounds like "issued" / "have numbers", require RTN_CR_No ---
     if any(w in q for w in ["issued", "with credit number", "have credit numbers"]):
         if "RTN_CR_No" in dv.columns:
-            dv = dv[dv["RTN_CR_No"].astype(str).str.strip().ne("")]
+            dv = dv[dv["RTN_CR_No"].fillna("").astype(str).str.strip().ne("")]
 
     if dv.empty:
         return "I don't see any credit records I can use to rank sales reps."

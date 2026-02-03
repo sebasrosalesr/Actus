@@ -17,7 +17,7 @@ def _has_rtn(series: pd.Series) -> pd.Series:
     Return a boolean mask where True = row HAS a credit number (RTN_CR_No).
     Treats NaN / '', 'NONE', 'NULL', 'NAN' as 'no credit number'.
     """
-    s = series.astype(str).str.strip()
+    s = series.fillna("").astype(str).str.strip()
     return (s != "") & ~s.str.upper().isin(["NAN", "NONE", "NULL", "NA"])
 
 

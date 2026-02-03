@@ -48,7 +48,7 @@ def _has_rtn(series: pd.Series) -> pd.Series:
     """
     True = row HAS a credit number (RTN_CR_No).
     """
-    s = series.astype(str).str.strip()
+    s = series.fillna("").astype(str).str.strip()
     return (s != "") & ~s.str.upper().isin(["NAN", "NONE", "NULL", "NA"])
 
 

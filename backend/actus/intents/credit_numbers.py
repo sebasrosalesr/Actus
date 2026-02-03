@@ -49,8 +49,8 @@ def intent_rtn_summary(query: str, df: pd.DataFrame):
     )
 
     # Non-empty RTN filter
-    rtn_col = dv[colname].astype(str).str.strip()
-    valid_mask = rtn_col.ne("") & ~rtn_col.str.upper().isin(["NAN", "NONE", "NULL"])
+    rtn_col = dv[colname].fillna("").astype(str).str.strip()
+    valid_mask = rtn_col.ne("") & ~rtn_col.str.upper().isin(["NAN", "NONE", "NULL", "NA"])
     rtn_df = dv[valid_mask].copy()
     missing_df = dv[~valid_mask].copy()
 

@@ -70,7 +70,7 @@ def intent_top_accounts(query: str, df: pd.DataFrame):
     # --- If query sounds like "issued" / "have numbers", require RTN_CR_No ---
     if any(w in q for w in ["issued", "with credit number", "have credit numbers"]):
         if "RTN_CR_No" in dv.columns:
-            dv = dv[dv["RTN_CR_No"].astype(str).str.strip().ne("")]
+            dv = dv[dv["RTN_CR_No"].fillna("").astype(str).str.strip().ne("")]
         # if RTN_CR_No missing, we still continue, just using all credit rows
 
     if dv.empty:

@@ -22,9 +22,6 @@ def _no_rtn_mask(dv: pd.DataFrame) -> pd.Series:
 
     We treat a ticket as having a credit number if:
       - RTN_CR_No column is non-empty / non-null
-        OR
-      - Status text mentions any kind of "credit number",
-        "Credit Request No.:", or RTNCM code.
     """
     col = "RTN_CR_No"
 
@@ -37,22 +34,10 @@ def _no_rtn_mask(dv: pd.DataFrame) -> pd.Series:
     bad_vals = {"", "NAN", "NONE", "NULL", "NA"}
     has_rtn_col = ~rtn_series.str.upper().isin(bad_vals)
 
-    # 2) Look into Status text for evidence of a credit number
-    status = dv.get("Status", pd.Series("", index=dv.index)).astype(str)
-    status_upper = status.str.upper()
+    # 2) Ticket is considered to HAVE a credit if RTN_CR_No is present
+    has_credit = has_rtn_col
 
-    status_has_credit = (
-        status_upper.str.contains("CREDIT NUMBER", na=False) |
-        status_upper.str.contains("CREDIT NUMBERS", na=False) |
-        status_upper.str.contains("CREDIT REQUEST NO.:", na=False) |
-        status_upper.str.contains("CREDIT REQUEST NO", na=False) |
-        status_upper.str.contains("RTNCM", na=False)       # catch RTNCM0031274, etc.
-    )
-
-    # 3) Ticket is considered to HAVE a credit if either condition is true
-    has_credit = has_rtn_col | status_has_credit
-
-    # 4) We want only tickets that still need a credit number
+    # 3) We want only tickets that still need a credit number
     return ~has_credit
 
 

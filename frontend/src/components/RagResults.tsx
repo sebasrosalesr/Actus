@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Search, Sparkles, FileText, Database, Layers, ArrowRight, X, ChevronRight, Activity } from "lucide-react";
+import { Search, Sparkles, FileText, Database, ArrowRight, X, Activity } from "lucide-react";
 
 type RagSnippet = {
   text: string;
@@ -83,12 +83,6 @@ function extractCustomer(text: string): string | null {
 function extractTotalCredit(text: string): string | null {
   // total_credit: 85.69
   const re = /total_credit:\s*([0-9]+(?:\.[0-9]+)?)/i;
-  const m = text.match(re);
-  return m ? m[1] : null;
-}
-
-function extractCreatedDate(text: string): string | null {
-  const re = /created\s+(\d{4}-\d{2}-\d{2})/i;
   const m = text.match(re);
   return m ? m[1] : null;
 }
@@ -304,8 +298,6 @@ export function RagResults({
             const customer = extractCustomer(head);
             const invoice = extractInvoice(head);
             const totalCredit = extractTotalCredit(head);
-            const createdDate = extractCreatedDate(head);
-            const scoreLabel = r.ui?.score_label ?? "Similarity Score";
             const scoreValue = typeof r.ui?.score_value === "number" ? r.ui?.score_value : r.score;
             const confidenceLabel = r.action_confidence
               ? r.action_confidence.charAt(0).toUpperCase() + r.action_confidence.slice(1)
@@ -333,7 +325,7 @@ export function RagResults({
               ? creditNumbers.slice(0, 10)
               : creditNumbers;
             const trace = traceMap[r.ticket_id];
-            const itemCount = refsMap[r.ticket_id]?.item_numbers?.length ?? null;
+            // item numbers are shown in the refs panel when opened
 
             return (
               <div

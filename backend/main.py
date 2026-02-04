@@ -172,13 +172,11 @@ def _load_firebase_df() -> pd.DataFrame:
     for col in expected_columns:
         if col not in df_.columns:
             df_[col] = None
-    # Parse without forcing UTC, then drop any tz info without shifting wall time.
-    date_series = pd.to_datetime(df_["Date"], errors="coerce", utc=False)
-    try:
-        date_series = date_series.dt.tz_localize(None)
-    except Exception:
-        pass
-    df_["Date"] = date_series
+    # Treat Firebase "Date" as a date-only value even if it includes a timestamp.
+    raw_date = df_["Date"].astype(str).str.strip()
+    date_part = raw_date.str.extract(r"(\d{4}-\d{2}-\d{2})", expand=False)
+    date_series = pd.to_datetime(date_part.fillna(raw_date), errors="coerce")
+    df_["Date"] = date_series.dt.normalize()
     return df_
 
 

@@ -494,6 +494,9 @@ export default function ActusChat({ userEmail, onLogout }: ActusChatProps) {
             return Number.isNaN(asDate.getTime()) ? null : asDate;
         }
         if (typeof value === 'string') {
+            if (/^\d{4}-\d{2}-\d{2}$/.test(value.trim())) {
+                return null;
+            }
             const asDate = new Date(value);
             return Number.isNaN(asDate.getTime()) ? null : asDate;
         }
@@ -501,6 +504,9 @@ export default function ActusChat({ userEmail, onLogout }: ActusChatProps) {
     };
 
     const formatIndyDate = (value: unknown) => {
+        if (typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value.trim())) {
+            return value.trim();
+        }
         const asDate = parseDateValue(value);
         if (!asDate) return String(value);
         return new Intl.DateTimeFormat('en-CA', {

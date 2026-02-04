@@ -362,7 +362,7 @@ def intent_credit_ops_snapshot(query: str, df: pd.DataFrame):
     ]
 
     def matches_any(text_series, patterns):
-        pat = "(" + "|".join(patterns) + ")"
+        pat = "(?:" + "|".join(patterns) + ")"
         return text_series.str.contains(pat, regex=True, na=False)
 
     is_submitted = matches_any(msg, submitted_patterns)

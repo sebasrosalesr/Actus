@@ -204,9 +204,11 @@ def _suggest_intents_openrouter(query: str):
     try:
         raw = _call()
     except Exception:
-        if fallback_model:
+        if not fallback_model:
+            return []
+        try:
             raw = _call(model_override=fallback_model)
-        else:
+        except Exception:
             return []
     cleaned = raw.strip()
     if cleaned.startswith("```"):

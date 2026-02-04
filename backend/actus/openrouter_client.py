@@ -1,5 +1,6 @@
 import json
 import os
+import time
 import urllib.error
 import urllib.request
 from typing import Any, Dict, List, Optional
@@ -29,14 +30,20 @@ def openrouter_chat(messages: List[Dict[str, str]], model: Optional[str] = None)
         },
         method="POST",
     )
-    try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            raw = resp.read().decode("utf-8")
-    except urllib.error.HTTPError as exc:
-        detail = exc.read().decode("utf-8") if exc.fp else str(exc)
-        raise RuntimeError(f"OpenRouter request failed: {detail}") from exc
-    except urllib.error.URLError as exc:
-        raise RuntimeError(f"OpenRouter request failed: {exc}") from exc
+    max_retries = 2
+    for attempt in range(max_retries + 1):
+        try:
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                raw = resp.read().decode("utf-8")
+            break
+        except urllib.error.HTTPError as exc:
+            detail = exc.read().decode("utf-8") if exc.fp else str(exc)
+            if exc.code == 429 and attempt < max_retries:
+                time.sleep(0.5 * (2 ** attempt))
+                continue
+            raise RuntimeError(f"OpenRouter request failed: {detail}") from exc
+        except urllib.error.URLError as exc:
+            raise RuntimeError(f"OpenRouter request failed: {exc}") from exc
 
     data = json.loads(raw)
     choice = (data.get("choices") or [{}])[0]

@@ -172,7 +172,8 @@ def _load_firebase_df() -> pd.DataFrame:
     for col in expected_columns:
         if col not in df_.columns:
             df_[col] = None
-    df_["Date"] = pd.to_datetime(df_["Date"], errors="coerce", utc=False)
+    # Normalize to date-only in UTC to avoid off-by-one shifts on local tz conversion.
+    df_["Date"] = pd.to_datetime(df_["Date"], errors="coerce", utc=True).dt.tz_localize(None)
     return df_
 
 

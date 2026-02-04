@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+DEFAULT_KEY="${ROOT_DIR}/creditapp-tm-firebase-adminsdk-fbsvc-2ba80ff53e.json"
+
+if [[ -z "${ACTUS_FIREBASE_JSON:-}" && -z "${ACTUS_FIREBASE_PATH:-}" && -f "${DEFAULT_KEY}" ]]; then
+  export ACTUS_FIREBASE_PATH="${DEFAULT_KEY}"
+fi
+
+if [[ -z "${ACTUS_FIREBASE_JSON:-}" && -z "${ACTUS_FIREBASE_PATH:-}" ]]; then
+  echo "Missing Firebase credentials. Set ACTUS_FIREBASE_JSON or ACTUS_FIREBASE_PATH." >&2
+  echo "Example:" >&2
+  echo "  ACTUS_FIREBASE_PATH=path/to/service-account.json \\" >&2
+  echo "  scripts/create-user --email user@company.com --password 'TempPass123!' --role admin" >&2
+  exit 1
+fi
+
+python "${ROOT_DIR}/backend/scripts/create_firebase_user.py" "$@"

@@ -932,9 +932,11 @@ def _rag_search_impl(payload: RagSearchRequest) -> dict[str, Any]:
                 summary_meta = best_summary.get("metadata") or {}
                 reason = summary_meta.get("reason_for_credit")
                 root_cause = summary_meta.get("root_cause")
+                root_causes_all = summary_meta.get("root_causes_all") or []
                 root_cause_confidence = summary_meta.get("root_cause_confidence")
                 root_cause_score = summary_meta.get("root_cause_score")
                 root_cause_rule_id = summary_meta.get("root_cause_rule_id")
+                root_cause_rule_ids = summary_meta.get("root_cause_rule_ids") or []
                 root_cause_triggers = summary_meta.get("root_cause_triggers")
                 root_cause_ruleset_version = summary_meta.get("root_cause_ruleset_version")
                 root_cause = (best_summary.get("metadata") or {}).get("root_cause")
@@ -947,9 +949,11 @@ def _rag_search_impl(payload: RagSearchRequest) -> dict[str, Any]:
                             "score": 1.0,
                             "reason_for_credit": reason,
                             "root_cause": root_cause,
+                            "root_causes_all": root_causes_all,
                             "root_cause_confidence": root_cause_confidence,
                             "root_cause_score": root_cause_score,
                             "root_cause_rule_id": root_cause_rule_id,
+                            "root_cause_rule_ids": root_cause_rule_ids,
                             "root_cause_triggers": root_cause_triggers,
                             "root_cause_ruleset_version": root_cause_ruleset_version,
                             "snippets": deduped,
@@ -1098,9 +1102,11 @@ def _rag_search_impl(payload: RagSearchRequest) -> dict[str, Any]:
                 summary_meta = best_summary.get("metadata", {})
                 group["reason_for_credit"] = summary_meta.get("reason_for_credit")
                 group["root_cause"] = summary_meta.get("root_cause")
+                group["root_causes_all"] = summary_meta.get("root_causes_all") or []
                 group["root_cause_confidence"] = summary_meta.get("root_cause_confidence")
                 group["root_cause_score"] = summary_meta.get("root_cause_score")
                 group["root_cause_rule_id"] = summary_meta.get("root_cause_rule_id")
+                group["root_cause_rule_ids"] = summary_meta.get("root_cause_rule_ids") or []
                 group["root_cause_triggers"] = summary_meta.get("root_cause_triggers")
                 group["root_cause_ruleset_version"] = summary_meta.get("root_cause_ruleset_version")
 

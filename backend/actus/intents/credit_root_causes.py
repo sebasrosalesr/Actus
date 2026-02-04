@@ -46,13 +46,14 @@ def intent_root_cause_summary(query: str, df: pd.DataFrame):
     ).fillna(0.0)
 
     root_causes = _lookup_root_causes(dv["Ticket Number"])
-    has_root = root_causes.notna() & root_causes.astype(str).str.strip().ne("")
+    cause_series = root_causes["Root Causes (Primary)"]
+    has_root = cause_series.notna() & cause_series.astype(str).str.strip().ne("")
     if not has_root.any():
         return (
             "I can't find any root-cause metadata in RAG for the current tickets."
         )
 
-    cause_series = root_causes.astype(str).str.strip()
+    cause_series = cause_series.astype(str).str.strip()
     cause_series = cause_series.where(has_root, "Unspecified")
     dv["Root Cause"] = cause_series
 

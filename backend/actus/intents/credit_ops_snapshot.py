@@ -221,24 +221,36 @@ def _normalize_ticket_id(value: object) -> str | None:
     return ticket_id
 
 
-def _extract_root_cause(rows: list[dict]) -> str | None:
-    best = None
+def _extract_root_causes(rows: list[dict]) -> tuple[str | None, list[str]]:
+    primary = None
+    seen: list[str] = []
     for row in rows:
         meta = row.get("metadata") or {}
         if not isinstance(meta, dict):
             continue
         root_cause = _normalize_root_cause(meta.get("root_cause"))
-        if not root_cause:
-            continue
+        root_causes_all = meta.get("root_causes_all")
+        if isinstance(root_causes_all, str):
+            root_causes_all = [root_causes_all]
+        if isinstance(root_causes_all, list):
+            for item in root_causes_all:
+                normalized = _normalize_root_cause(item)
+                if normalized and normalized not in seen:
+                    seen.append(str(normalized))
+        if root_cause:
+            root_cause = str(root_cause)
+            if root_cause not in seen:
+                seen.append(root_cause)
         kind = (row.get("chunk_type") or meta.get("chunk_type") or meta.get("event_type") or "").lower()
         if kind in {"summary", "ticket_summary"}:
-            return str(root_cause)
-        if best is None:
-            best = str(root_cause)
-    return best
+            primary = root_cause or (seen[0] if seen else None)
+            break
+        if primary is None:
+            primary = root_cause or (seen[0] if seen else None)
+    return primary, seen
 
 
-def _lookup_root_causes(ticket_series: pd.Series) -> pd.Series:
+def _lookup_root_causes(ticket_series: pd.Series) -> pd.DataFrame:
     ticket_map: dict[str, list[int]] = {}
     for idx, raw in ticket_series.items():
         ticket_id = _normalize_ticket_id(raw)
@@ -246,7 +258,14 @@ def _lookup_root_causes(ticket_series: pd.Series) -> pd.Series:
             continue
         ticket_map.setdefault(ticket_id, []).append(idx)
 
-    results = pd.Series([None] * len(ticket_series), index=ticket_series.index, dtype="object")
+    results = pd.DataFrame(
+        {
+            "Root Causes (Primary)": [None] * len(ticket_series),
+            "Root Causes (All)": [None] * len(ticket_series),
+            "Root Cause Mixed": [False] * len(ticket_series),
+        },
+        index=ticket_series.index,
+    )
     if not ticket_map:
         return results
 
@@ -256,15 +275,15 @@ def _lookup_root_causes(ticket_series: pd.Series) -> pd.Series:
     except Exception:
         return results
 
-    root_map: dict[str, str] = {}
+    root_map: dict[str, tuple[str | None, list[str]]] = {}
     for ticket_id in ticket_map:
         try:
             rows = store.get_ticket_chunks(ticket_id)
         except Exception:
             continue
-        root_cause = _extract_root_cause(rows)
-        if root_cause:
-            root_map[ticket_id] = root_cause
+        primary, all_causes = _extract_root_causes(rows)
+        if primary or all_causes:
+            root_map[ticket_id] = (primary, all_causes)
 
     try:
         store.close()
@@ -275,7 +294,11 @@ def _lookup_root_causes(ticket_series: pd.Series) -> pd.Series:
         ticket_id = _normalize_ticket_id(raw)
         if not ticket_id:
             continue
-        results.at[idx] = root_map.get(ticket_id)
+        primary, all_causes = root_map.get(ticket_id, (None, []))
+        results.at[idx, "Root Causes (Primary)"] = primary
+        if all_causes:
+            results.at[idx, "Root Causes (All)"] = ", ".join(all_causes)
+            results.at[idx, "Root Cause Mixed"] = len(set(all_causes)) > 1
 
     return results
 
@@ -382,6 +405,10 @@ def intent_credit_ops_snapshot(query: str, df: pd.DataFrame):
 
     if "Root Causes" not in df_use.columns:
         df_use["Root Causes"] = None
+    if "Root Causes (All)" not in df_use.columns:
+        df_use["Root Causes (All)"] = None
+    if "Root Cause Mixed" not in df_use.columns:
+        df_use["Root Cause Mixed"] = False
 
     if "root_cause" in df_use.columns:
         df_use["Root Causes"] = df_use["Root Causes"].fillna(df_use["root_cause"])
@@ -391,7 +418,9 @@ def intent_credit_ops_snapshot(query: str, df: pd.DataFrame):
     ticket_series = df_use.get("Ticket Number", pd.Series(index=df_use.index, dtype="object"))
     if not ticket_series.empty:
         rag_root_causes = _lookup_root_causes(ticket_series)
-        df_use["Root Causes"] = df_use["Root Causes"].fillna(rag_root_causes)
+        df_use["Root Causes"] = df_use["Root Causes"].fillna(rag_root_causes["Root Causes (Primary)"])
+        df_use["Root Causes (All)"] = df_use["Root Causes (All)"].fillna(rag_root_causes["Root Causes (All)"])
+        df_use["Root Cause Mixed"] = df_use["Root Cause Mixed"] | rag_root_causes["Root Cause Mixed"].fillna(False)
     df_use["Root Causes"] = df_use["Root Causes"].apply(_normalize_root_cause)
 
     cols = [
@@ -409,6 +438,8 @@ def intent_credit_ops_snapshot(query: str, df: pd.DataFrame):
         "Issue Type",
         "Reason for Credit",
         "Root Causes",
+        "Root Causes (All)",
+        "Root Cause Mixed",
         "Requested By",
         "Sales Rep",
         "CR_without_number",

@@ -361,7 +361,7 @@ ROOT_CAUSE_RULES = [
 ]
 
 
-def _detect_root_cause(text: str) -> dict[str, Any]:
+def _score_root_causes(text: str) -> list[dict[str, Any]]:
     value = normalize_text(text)
     scored: list[dict[str, Any]] = []
 
@@ -391,17 +391,41 @@ def _detect_root_cause(text: str) -> dict[str, Any]:
             }
         )
 
-    if not scored:
+    return scored
+
+
+def _detect_root_causes(texts: list[str]) -> dict[str, Any]:
+    aggregated: dict[str, dict[str, Any]] = {}
+    for text in texts:
+        if not text:
+            continue
+        for match in _score_root_causes(text):
+            label = match["label"]
+            existing = aggregated.get(label)
+            if existing is None or match["score"] > existing["score"]:
+                aggregated[label] = {**match, "triggers": list(match["triggers"])}
+            else:
+                triggers = set(existing.get("triggers") or [])
+                triggers.update(match.get("triggers") or [])
+                existing["triggers"] = sorted(triggers)
+
+    if not aggregated:
         return {
             "root_cause": "UNKNOWN",
+            "root_causes_all": [],
             "root_cause_confidence": "low",
             "root_cause_score": 0.0,
             "root_cause_rule_id": None,
+            "root_cause_rule_ids": [],
             "root_cause_triggers": [],
             "root_cause_ruleset_version": ROOT_CAUSE_RULESET_VERSION,
         }
 
-    scored.sort(key=lambda item: (item["score"], item["priority"]), reverse=True)
+    scored = sorted(
+        aggregated.values(),
+        key=lambda item: (item["score"], item["priority"]),
+        reverse=True,
+    )
     best = scored[0]
     score = float(best["score"])
     if score >= 2.0:
@@ -413,9 +437,11 @@ def _detect_root_cause(text: str) -> dict[str, Any]:
 
     return {
         "root_cause": best["label"],
+        "root_causes_all": [item["label"] for item in scored],
         "root_cause_confidence": confidence,
         "root_cause_score": score,
         "root_cause_rule_id": best["id"],
+        "root_cause_rule_ids": [item["id"] for item in scored if item.get("id")],
         "root_cause_triggers": best["triggers"],
         "root_cause_ruleset_version": ROOT_CAUSE_RULESET_VERSION,
     }
@@ -583,6 +609,7 @@ def build_chunks(
         customer = None
         status = None
         reason = None
+        reasons: list[str] = []
         created_date = None
         invoices: list[str] = []
         item_numbers: list[str] = []
@@ -597,8 +624,11 @@ def build_chunks(
                 customer = row.get("Customer Number") or row.get("customer")
             if status is None:
                 status = row.get("Status") or row.get("status")
+            row_reason = row.get("Reason for Credit") or row.get("reason_for_credit")
+            if row_reason is not None:
+                reasons.append(str(row_reason))
             if reason is None:
-                reason = row.get("Reason for Credit") or row.get("reason_for_credit")
+                reason = row_reason
             if created_date is None:
                 created_date = row.get("Date") or row.get("created_date")
             if status_fallback is None:
@@ -633,9 +663,17 @@ def build_chunks(
         note_recent = note_texts[-3:]
 
         clean_notes = [_cap_text(n, 500) for n in note_recent if n]
-        root_cause_meta = _detect_root_cause(
-            " ".join([str(reason or ""), " ".join(status_recent), " ".join(clean_notes)])
-        )
+        reason_values = [
+            str(value).strip()
+            for value in reasons
+            if value is not None and str(value).strip()
+        ]
+        root_cause_texts = [
+            *reason_values,
+            " ".join(status_recent),
+            " ".join(clean_notes),
+        ]
+        root_cause_meta = _detect_root_causes(root_cause_texts)
         root_cause = root_cause_meta.get("root_cause")
         root_cause_display = (
             "Needs review" if root_cause == "UNKNOWN" else root_cause
@@ -673,9 +711,11 @@ def build_chunks(
                     "item_numbers": item_numbers,
                     "credit_numbers": credit_numbers,
                     "root_cause": root_cause,
+                    "root_causes_all": root_cause_meta.get("root_causes_all", []),
                     "root_cause_confidence": root_cause_meta.get("root_cause_confidence"),
                     "root_cause_score": root_cause_meta.get("root_cause_score"),
                     "root_cause_rule_id": root_cause_meta.get("root_cause_rule_id"),
+                    "root_cause_rule_ids": root_cause_meta.get("root_cause_rule_ids", []),
                     "root_cause_triggers": root_cause_meta.get("root_cause_triggers"),
                     "root_cause_ruleset_version": root_cause_meta.get(
                         "root_cause_ruleset_version"

@@ -257,6 +257,8 @@ def intent_credit_activity(query: str, df: pd.DataFrame):
         .sort_values("Last_Status_Time", ascending=False)
         .reset_index(drop=True)
     )
+    # Present date-only values without timezone shifting in the UI preview/export.
+    out["Date"] = pd.to_datetime(out["Date"], errors="coerce", utc=True).dt.strftime("%Y-%m-%d")
 
     preview = out.head(200).copy()
 

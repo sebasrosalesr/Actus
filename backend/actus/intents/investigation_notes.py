@@ -243,7 +243,7 @@ def intent_investigation_notes(query: str, df: pd.DataFrame):
     notes["Sort Time"] = notes["Updated At"].fillna(notes["Created At"])
     notes = notes.sort_values("Sort Time", ascending=False, na_position="last")
 
-    preview = notes[preview_cols].head(10)
+    preview = notes[preview_cols]
     items: list[str] = []
     for _, row in preview.iterrows():
         combo = row.get("Combo Key") or "N/A"

@@ -100,6 +100,12 @@ def _summarize_note_body(body: str) -> Optional[list[str]]:
         return None
     if not body.strip() or body.strip() == "No note body found.":
         return None
+    max_chars_raw = os.environ.get("ACTUS_INV_NOTE_SUMMARY_MAX_CHARS", "6000").strip()
+    try:
+        max_chars = max(1000, int(max_chars_raw))
+    except ValueError:
+        max_chars = 6000
+    summary_body = body if len(body) <= max_chars else body[:max_chars].rstrip() + "\n\n[Truncated for summary]"
 
     system_prompt = (
         "You summarize internal investigation notes for credit ops. "
@@ -110,7 +116,7 @@ def _summarize_note_body(body: str) -> Optional[list[str]]:
     try:
         messages = [
             {"role": "system", "content": system_prompt},
-            {"role": "user", "content": body},
+            {"role": "user", "content": summary_body},
         ]
         response = openrouter_chat(messages)
     except Exception:

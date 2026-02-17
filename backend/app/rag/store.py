@@ -509,9 +509,11 @@ class PineconeRagStore:
         ticket_key = self._normalize_ticket_id(ticket_id)
         if not ticket_key:
             return []
+        vector = embed_texts([ticket_key])[0].astype("float32", copy=False).tolist()
+        top_k = int(os.environ.get("ACTUS_PINECONE_TICKET_TOP_K", "500"))
         response = self.index.query(
-            vector=embed_texts([ticket_key])[0].astype("float32", copy=False).tolist(),
-            top_k=int(os.environ.get("ACTUS_PINECONE_TICKET_TOP_K", "500")),
+            vector=vector,
+            top_k=top_k,
             include_metadata=True,
             namespace=self.namespace,
             filter={"ticket_id": {"$eq": ticket_key}},
@@ -519,6 +521,38 @@ class PineconeRagStore:
         matches = getattr(response, "matches", None)
         if matches is None and isinstance(response, dict):
             matches = response.get("matches")
+
+        # Fallback: some ANN+filter executions can miss sparse ID-style queries.
+        # Pull a wider unfiltered candidate set, then filter by ticket_id client-side.
+        if not matches:
+            fallback_top_k = int(os.environ.get("ACTUS_PINECONE_TICKET_FALLBACK_TOP_K", "1000"))
+            fallback = self.index.query(
+                vector=vector,
+                top_k=max(top_k, fallback_top_k),
+                include_metadata=True,
+                namespace=self.namespace,
+            )
+            fallback_matches = getattr(fallback, "matches", None)
+            if fallback_matches is None and isinstance(fallback, dict):
+                fallback_matches = fallback.get("matches")
+            if fallback_matches:
+                filtered = []
+                for match in fallback_matches:
+                    if isinstance(match, dict):
+                        meta = match.get("metadata") or {}
+                    else:
+                        meta = getattr(match, "metadata", None) or {}
+                    nested_meta = _safe_json_loads(meta.get("metadata_json") or meta.get("metadata"))
+                    if not isinstance(nested_meta, dict):
+                        nested_meta = {}
+                    match_ticket = self._normalize_ticket_id(
+                        meta.get("ticket_id")
+                        or nested_meta.get("ticket_id")
+                    )
+                    if match_ticket == ticket_key:
+                        filtered.append(match)
+                matches = filtered
+
         if not matches:
             return []
         rows = []

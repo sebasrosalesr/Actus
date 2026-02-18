@@ -518,6 +518,9 @@ export default function ActusChat({ userEmail, onLogout }: ActusChatProps) {
     };
 
     const formatIndyDateTime = (value: unknown) => {
+        if (typeof value === 'string' && /^\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}(?::\d{2})?$/.test(value.trim())) {
+            return value.trim().slice(0, 16);
+        }
         const asDate = parseDateValue(value);
         if (!asDate) return String(value);
         const parts = new Intl.DateTimeFormat('en-CA', {

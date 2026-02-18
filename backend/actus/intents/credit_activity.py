@@ -186,9 +186,15 @@ def intent_credit_activity(query: str, df: pd.DataFrame):
     df_use["Last_Status_Time_Str"] = status_series.str.findall(ts_regex).apply(
         lambda xs: xs[-1] if xs else pd.NA
     )
-    df_use["Last_Status_Time"] = pd.to_datetime(
-        df_use["Last_Status_Time_Str"], errors="coerce", utc=True
+    # Status timeline timestamps are local Indianapolis wall-clock times.
+    # Parse as local first, then convert to UTC only for window filtering.
+    last_status_local = pd.to_datetime(df_use["Last_Status_Time_Str"], errors="coerce")
+    df_use["Last_Status_Time_Local"] = last_status_local.dt.tz_localize(
+        "America/Indiana/Indianapolis",
+        ambiguous="NaT",
+        nonexistent="shift_forward",
     )
+    df_use["Last_Status_Time"] = df_use["Last_Status_Time_Local"].dt.tz_convert("UTC")
 
     parts = status_series.str.split(ts_regex, regex=True)
     df_use["Last_Status_Message"] = parts.apply(
@@ -259,6 +265,12 @@ def intent_credit_activity(query: str, df: pd.DataFrame):
     )
     # Present date-only values without timezone shifting in the UI preview/export.
     out["Date"] = pd.to_datetime(out["Date"], errors="coerce", utc=True).dt.strftime("%Y-%m-%d")
+    # Keep Last_Status_Time as explicit local display text to avoid client-side timezone shifts.
+    out["Last_Status_Time"] = (
+        pd.to_datetime(out["Last_Status_Time"], errors="coerce", utc=True)
+        .dt.tz_convert("America/Indiana/Indianapolis")
+        .dt.strftime("%Y-%m-%d %H:%M")
+    )
 
     preview = out.head(200).copy()
 

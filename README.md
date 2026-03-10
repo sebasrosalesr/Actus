@@ -62,7 +62,7 @@ export ACTUS_API_KEY="your-api-key"
 export ACTUS_CORS_ORIGINS="https://your-vercel-domain.com"
 ```
 
-## OpenRouter (optional)
+## OpenRouter 
 
 Actus can route `/api/ask` to OpenRouter.
 

@@ -54,6 +54,8 @@ def _build_ticket_line_chunks(ticket: CanonicalTicket, start_chunk_id: int) -> l
             reason = " | ".join(line.reason_for_credit_raw_list) if line.reason_for_credit_raw_list else "None"
             text = (
                 f"Ticket {ticket.ticket_id} line {combo_key}. "
+                f"Customer {line.customer_number or 'None'}. "
+                f"Sales rep {line.sales_rep or 'None'}. "
                 f"Invoice {line.invoice_number}. "
                 f"Item {line.item_number}. "
                 f"Primary root cause: {line.root_cause_primary_id}. "
@@ -70,6 +72,8 @@ def _build_ticket_line_chunks(ticket: CanonicalTicket, start_chunk_id: int) -> l
                     metadata={
                         "ticket_id": ticket.ticket_id,
                         "combo_key": combo_key,
+                        "customer_number": line.customer_number,
+                        "sales_rep": line.sales_rep,
                         "invoice_number": line.invoice_number,
                         "item_number": line.item_number,
                         "root_cause_ids": line.root_cause_ids,

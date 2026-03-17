@@ -36,6 +36,16 @@ def main_new_design() -> None:
         if target_data_dir_raw
         else (Path(__file__).resolve().parents[1] / "rag_data" / "new_design")
     )
+    pinecone_api_key = os.environ.get("ACTUS_PINECONE_API_KEY") or os.environ.get("PINECONE_API_KEY")
+    pinecone_index = os.environ.get("ACTUS_PINECONE_INDEX") or os.environ.get("PINECONE_INDEX")
+    if not pinecone_api_key or not pinecone_index:
+        print(
+            "Canonical snapshot rebuilt, but skipping remote vector indexing because Pinecone "
+            "credentials are not configured. "
+            f"Canonical snapshot: {snapshot_path}"
+        )
+        return
+
     info = index_pipeline_artifacts(artifacts, data_dir=target_data_dir)
     print(
         f"Indexed {info['chunk_count']} chunks using new_design pipeline "

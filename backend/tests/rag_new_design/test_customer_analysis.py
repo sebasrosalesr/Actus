@@ -10,6 +10,8 @@ if str(BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(BACKEND_DIR))
 
 from app.rag.new_design.analytics import analyze_customer_actus
+from app.rag.new_design.index_build import build_pipeline_artifacts
+from app.rag.new_design.root_cause import load_root_cause_rules
 from app.rag.new_design.service import ActusHybridRAGService
 
 
@@ -149,6 +151,59 @@ class CustomerAnalysisTests(unittest.TestCase):
 
         self.assertEqual(payload["ticket_count"], 2)
         self.assertEqual(payload["credit_total"], 175.0)
+
+    def test_account_prefix_analysis_scopes_to_matching_lines_for_mixed_customer_ticket(self) -> None:
+        credit_rows = [
+            {
+                "Ticket Number": "R-034206",
+                "Invoice Number": "INV13484818",
+                "Item Number": "005-00148",
+                "Credit Request Total": "1199.04",
+                "Customer Number": "TWV01",
+                "Sales Rep": "AOBEZIL",
+                "RTN_CR_No": "RTNCM0034580",
+            },
+            {
+                "Ticket Number": "R-034206",
+                "Invoice Number": "INV13395933",
+                "Item Number": "004-100739",
+                "Credit Request Total": "180.88",
+                "Customer Number": "CMG12",
+                "Sales Rep": "MC/MF/SM",
+                "RTN_CR_No": "RTNCM0034552",
+            },
+            {
+                "Ticket Number": "R-034206",
+                "Invoice Number": "INV12864217",
+                "Item Number": "008-1754340",
+                "Credit Request Total": "39.70",
+                "Customer Number": "FOO02",
+                "Sales Rep": "ALANDAU",
+                "RTN_CR_No": "RTNCM0034073",
+            },
+        ]
+
+        artifacts = build_pipeline_artifacts(
+            credit_rows=credit_rows,
+            investigation_rows=[],
+            rules=load_root_cause_rules(),
+        )
+
+        payload = analyze_customer_actus("CMG", artifacts.canonical_tickets, match_mode="account_prefix")
+
+        self.assertEqual(payload["ticket_count"], 1)
+        self.assertEqual(payload["tickets"], ["R-034206"])
+        self.assertEqual(payload["matched_customer_numbers"], ["CMG12"])
+        self.assertEqual(payload["matched_account_prefixes"], ["CMG"])
+        self.assertEqual(payload["invoice_count"], 1)
+        self.assertEqual(payload["item_count"], 1)
+        self.assertEqual(payload["line_count"], 1)
+        self.assertEqual(payload["credit_total"], 180.88)
+        self.assertEqual(payload["credited_line_count"], 1)
+        self.assertEqual(payload["pending_line_count"], 0)
+        self.assertEqual(payload["top_items"][0]["item_number"], "004-100739")
+        self.assertEqual(payload["top_items"][0]["credit_total"], 180.88)
+        self.assertEqual(payload["top_tickets"][0]["credit_total"], 180.88)
 
 
 if __name__ == "__main__":

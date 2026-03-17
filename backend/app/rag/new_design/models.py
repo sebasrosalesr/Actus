@@ -45,6 +45,8 @@ class TicketLine:
     invoice_number: str
     item_number: str
     combo_key: str
+    customer_number: str | None = None
+    sales_rep: str | None = None
     credit_number: str | None = None
     reason_for_credit_raw_list: list[str] = field(default_factory=list)
     investigation_notes: list[InvestigationNote] = field(default_factory=list)

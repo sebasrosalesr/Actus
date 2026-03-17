@@ -108,6 +108,21 @@ def _ticket_account_prefixes(ticket: CanonicalTicket | dict[str, Any]) -> list[s
     return out
 
 
+def _line_customer_number(line: TicketLine | dict[str, Any]) -> str | None:
+    return _normalize_customer_number(_line_get(line, "customer_number"))
+
+
+def _line_account_prefix(line: TicketLine | dict[str, Any]) -> str | None:
+    customer_number = _line_customer_number(line)
+    if not customer_number:
+        return None
+    return _normalize_account_prefix(customer_number)
+
+
+def _line_sales_rep(line: TicketLine | dict[str, Any]) -> str | None:
+    return _norm_text(_line_get(line, "sales_rep"))
+
+
 def analyze_item_actus(item_number: str, canonical_tickets: dict[str, CanonicalTicket | dict[str, Any]]) -> dict[str, Any]:
     item_norm = _norm_text(item_number)
     if not item_norm:
@@ -296,14 +311,27 @@ def _summarize_ticket_credit_state(
     threshold_days: int,
 ) -> dict[str, Any]:
     lines = _iter_ticket_lines(ticket)
+    return _summarize_line_credit_state(
+        lines,
+        threshold_days=threshold_days,
+        status_raw_list=_ticket_get(ticket, "status_raw_list", []) or [],
+        ticket_credit_numbers=_ticket_get(ticket, "credit_numbers", []) or [],
+    )
+
+
+def _summarize_line_credit_state(
+    lines: list[TicketLine | dict[str, Any]],
+    *,
+    threshold_days: int,
+    status_raw_list: list[str],
+    ticket_credit_numbers: list[str],
+) -> dict[str, Any]:
     line_count = len(lines)
     line_credit_total = round(
         sum(_safe_float(_line_get(line, "credit_request_total")) for line in lines),
         2,
     )
-    credit_totals = _ticket_get(ticket, "credit_request_totals", []) or []
-    summary_credit_total = round(sum(_safe_float(v) for v in credit_totals), 2)
-    total_credit = line_credit_total if line_credit_total else summary_credit_total
+    total_credit = line_credit_total
 
     credited_line_count = 0
     credited_line_exposure = 0.0
@@ -313,7 +341,6 @@ def _summarize_ticket_credit_state(
             credited_line_count += 1
             credited_line_exposure += amount
 
-    ticket_credit_numbers = _ticket_get(ticket, "credit_numbers", []) or []
     if credited_line_count == 0 and line_count > 0:
         inferred_credit_count = min(sum(1 for v in ticket_credit_numbers if _is_valid_credit_value(v)), line_count)
         if inferred_credit_count > 0:
@@ -328,7 +355,7 @@ def _summarize_ticket_credit_state(
     is_fully_credited = credited_line_count > 0 and pending_line_count == 0
 
     timeline = compute_ticket_timeline_metrics_from_status_list(
-        _ticket_get(ticket, "status_raw_list", []) or [],
+        status_raw_list,
         threshold_days=threshold_days,
         has_credit_number=is_fully_credited or _has_credit_number(ticket_credit_numbers),
         pending_only=is_partially_credited,
@@ -391,21 +418,72 @@ def analyze_customer_actus(
             if _normalize_customer_number(value)
         ]
         ticket_prefixes = _ticket_account_prefixes(ticket)
+        ticket_lines = _iter_ticket_lines(ticket)
+        ticket_has_line_customer_scope = any(_line_customer_number(line) for line in ticket_lines)
 
-        if resolved_mode == "customer_number":
-            is_match = bool(normalized_customer) and normalized_customer in ticket_customers
+        matched_lines: list[TicketLine | dict[str, Any]] = []
+        matched_line_customers: set[str] = set()
+        matched_line_prefixes: set[str] = set()
+        matched_line_reps: set[str] = set()
+        matched_root_primary = Counter()
+        matched_root_all: set[str] = set()
+
+        if ticket_has_line_customer_scope:
+            for line in ticket_lines:
+                line_customer = _line_customer_number(line)
+                line_prefix = _line_account_prefix(line)
+
+                if resolved_mode == "customer_number":
+                    is_match = bool(normalized_customer) and line_customer == normalized_customer
+                else:
+                    is_match = bool(normalized_prefix) and line_prefix == normalized_prefix
+
+                if not is_match:
+                    continue
+
+                matched_lines.append(line)
+                if line_customer:
+                    matched_line_customers.add(line_customer)
+                if line_prefix:
+                    matched_line_prefixes.add(line_prefix)
+                rep_text = _line_sales_rep(line)
+                if rep_text:
+                    matched_line_reps.add(rep_text)
+
+                primary_root = str(_line_get(line, "root_cause_primary_id", "")).strip()
+                if primary_root and primary_root.lower() != "unidentified":
+                    matched_root_primary[primary_root] += 1
+
+                for root in (_line_get(line, "root_cause_ids", []) or []):
+                    root_text = str(root).strip()
+                    if root_text and root_text.lower() != "unidentified":
+                        matched_root_all.add(root_text)
         else:
-            is_match = bool(normalized_prefix) and normalized_prefix in ticket_prefixes
+            if resolved_mode == "customer_number":
+                is_match = bool(normalized_customer) and normalized_customer in ticket_customers
+            else:
+                is_match = bool(normalized_prefix) and normalized_prefix in ticket_prefixes
 
-        if not is_match:
+            if is_match:
+                matched_lines = ticket_lines
+                matched_line_customers.update(ticket_customers)
+                matched_line_prefixes.update(ticket_prefixes)
+
+        if not matched_lines:
             continue
 
         ticket_id_text = str(ticket_id).strip().upper()
         ticket_ids.add(ticket_id_text)
-        matched_customer_numbers.update(ticket_customers)
-        matched_account_prefixes.update(ticket_prefixes)
+        matched_customer_numbers.update(matched_line_customers)
+        matched_account_prefixes.update(matched_line_prefixes)
 
-        summary = _summarize_ticket_credit_state(ticket, threshold_days=threshold_days)
+        scoped_credit_numbers = [_line_get(line, "credit_number") for line in matched_lines]
+        summary = _summarize_line_credit_state(
+            matched_lines,
+            threshold_days=threshold_days,
+            status_raw_list=_ticket_get(ticket, "status_raw_list", []) or [],
+            ticket_credit_numbers=scoped_credit_numbers,
+        )
         credit_total += float(summary["credit_total"])
         line_count += int(summary["line_count"])
         credited_line_count += int(summary["credited_line_count"])
@@ -420,24 +498,32 @@ def analyze_customer_actus(
         else:
             open_ticket_count += 1
 
-        primary_root = str(_ticket_get(ticket, "root_cause_primary_id", "")).strip()
-        if primary_root and primary_root.lower() != "unidentified":
-            primary_root_cause_counts[primary_root] += 1
-
-        for root in (_ticket_get(ticket, "root_cause_ids", []) or []):
-            root_text = str(root).strip()
-            if root_text and root_text.lower() != "unidentified":
-                root_cause_counts_all[root_text] += 1
-
         reps_for_ticket: list[str] = []
-        for rep in (_ticket_get(ticket, "sales_reps", []) or []):
-            rep_text = str(rep).strip().upper()
-            if rep_text:
+        if ticket_has_line_customer_scope:
+            if matched_root_primary:
+                primary_root_cause_counts[matched_root_primary.most_common(1)[0][0]] += 1
+            for root in matched_root_all:
+                root_cause_counts_all[root] += 1
+            for rep_text in sorted(matched_line_reps):
                 sales_rep_counts[rep_text] += 1
                 reps_for_ticket.append(rep_text)
+        else:
+            primary_root = str(_ticket_get(ticket, "root_cause_primary_id", "")).strip()
+            if primary_root and primary_root.lower() != "unidentified":
+                primary_root_cause_counts[primary_root] += 1
 
-        lines = _iter_ticket_lines(ticket)
-        for line in lines:
+            for root in (_ticket_get(ticket, "root_cause_ids", []) or []):
+                root_text = str(root).strip()
+                if root_text and root_text.lower() != "unidentified":
+                    root_cause_counts_all[root_text] += 1
+
+            for rep in (_ticket_get(ticket, "sales_reps", []) or []):
+                rep_text = str(rep).strip().upper()
+                if rep_text:
+                    sales_rep_counts[rep_text] += 1
+                    reps_for_ticket.append(rep_text)
+
+        for line in matched_lines:
             amount = _safe_float(_line_get(line, "credit_request_total"))
 
             invoice = _norm_text(_line_get(line, "invoice_number"))
@@ -467,14 +553,32 @@ def analyze_customer_actus(
         ticket_summaries.append(
             {
                 "ticket_id": ticket_id_text,
-                "customer_numbers": ticket_customers,
-                "account_prefixes": ticket_prefixes,
-                "primary_root_cause": primary_root or "unidentified",
-                "supporting_root_causes": [
-                    str(root).strip()
-                    for root in (_ticket_get(ticket, "root_cause_ids", []) or [])
-                    if str(root).strip() and str(root).strip() != primary_root and str(root).strip().lower() != "unidentified"
-                ],
+                "customer_numbers": sorted(matched_line_customers),
+                "account_prefixes": sorted(matched_line_prefixes),
+                "primary_root_cause": (
+                    matched_root_primary.most_common(1)[0][0]
+                    if ticket_has_line_customer_scope and matched_root_primary
+                    else str(_ticket_get(ticket, "root_cause_primary_id", "")).strip() or "unidentified"
+                ),
+                "supporting_root_causes": (
+                    sorted(
+                        root
+                        for root in matched_root_all
+                        if root not in {
+                            matched_root_primary.most_common(1)[0][0]
+                            if matched_root_primary
+                            else ""
+                        }
+                    )
+                    if ticket_has_line_customer_scope
+                    else [
+                        str(root).strip()
+                        for root in (_ticket_get(ticket, "root_cause_ids", []) or [])
+                        if str(root).strip()
+                        and str(root).strip() != str(_ticket_get(ticket, "root_cause_primary_id", "")).strip()
+                        and str(root).strip().lower() != "unidentified"
+                    ]
+                ),
                 "sales_reps": reps_for_ticket,
                 "credit_total": round(float(summary["credit_total"]), 2),
                 "line_count": int(summary["line_count"]),

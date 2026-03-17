@@ -86,6 +86,8 @@ def build_line_map(credit_rows: list[dict[str, Any]]) -> dict[str, dict[str, lis
             invoice_number=invoice,
             item_number=item,
             combo_key=combo_key,
+            customer_number=_norm_upper(row.get("Customer Number") or row.get("customer_number")),
+            sales_rep=_norm_upper(row.get("Sales Rep") or row.get("sales_rep")),
             credit_number=_norm_upper(row.get("RTN_CR_No") or row.get("credit_number")),
             reason_for_credit_raw_list=reasons,
             credit_request_total=_safe_float(

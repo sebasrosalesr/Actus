@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { Search, Sparkles, FileText, Database, ArrowRight, X, Activity, Target } from "lucide-react";
-import { Analysis } from "./Analysis";
+import { Analysis, CustomerAnalysis } from "./Analysis";
 
 type RagSnippet = {
   text: string;
@@ -114,6 +114,47 @@ type TicketAnalysisResponse = {
   answer: string;
 };
 
+type CustomerAnalysisResponse = {
+  query: string;
+  match_mode: string;
+  normalized_query: string;
+  matched_customer_numbers: string[];
+  matched_account_prefixes: string[];
+  ticket_count: number;
+  invoice_count: number;
+  item_count: number;
+  line_count: number;
+  credit_total: number;
+  credited_line_count: number;
+  pending_line_count: number;
+  credited_line_exposure: number;
+  pending_line_exposure: number;
+  fully_credited_ticket_count: number;
+  partially_credited_ticket_count: number;
+  open_ticket_count: number;
+  root_cause_counts_primary: Record<string, number>;
+  root_cause_counts_all: Record<string, number>;
+  sales_rep_counts: Record<string, number>;
+  item_counts: Record<string, number>;
+  item_credit_totals: Record<string, number>;
+  tickets: string[];
+  invoice_numbers: string[];
+  item_numbers: string[];
+  top_items: Array<{ item_number: string; line_count: number; credit_total: number }>;
+  top_tickets: Array<{
+    ticket_id: string;
+    primary_root_cause?: string;
+    credit_total: number;
+    line_count: number;
+    credited_line_count: number;
+    pending_line_count: number;
+  }>;
+  top_invoices: Array<{ invoice_number: string; line_count: number; credit_total: number }>;
+  first_seen: string | null;
+  last_seen: string | null;
+  answer: string;
+};
+
 function formatScore(score: number) {
   // cosine similarity: 0..1-ish
   return score.toFixed(3);
@@ -220,6 +261,44 @@ function extractTicketIdFromQuery(raw: string): string | null {
   return null;
 }
 
+function extractCustomerQueryFromQuery(raw: string): string | null {
+  const query = String(raw || "").trim();
+  if (!query) return null;
+
+  const explicitMatch = query.match(
+    /\b(?:account(?:\s+prefix)?|customer(?:\s+(?:number|id))?|prefix)\s*[:\-]?\s*([A-Za-z][A-Za-z0-9-]{1,})\b/i
+  );
+  if (explicitMatch?.[1]) {
+    return explicitMatch[1].toUpperCase();
+  }
+
+  const tokens = query.match(/[A-Za-z][A-Za-z0-9-]*/g) ?? [];
+  const stopWords = new Set([
+    "ANALYZE",
+    "ACCOUNT",
+    "PREFIX",
+    "CUSTOMER",
+    "NUMBER",
+    "ID",
+    "FOR",
+    "THE",
+    "THIS",
+    "SHOW",
+    "ME",
+    "RUN",
+    "CREDITS",
+    "CREDIT",
+  ]);
+
+  for (const token of tokens) {
+    const value = token.trim().toUpperCase();
+    if (stopWords.has(value)) continue;
+    if (value.length >= 3) return value;
+  }
+
+  return null;
+}
+
 export function RagResults({
   apiBase = import.meta.env.VITE_API_BASE_URL ?? import.meta.env.VITE_API_BASE ?? "http://127.0.0.1:8000",
 }: {
@@ -239,6 +318,7 @@ export function RagResults({
   const [loading, setLoading] = useState(false);
   const [data, setData] = useState<RagResponse | null>(null);
   const [itemAnalysis, setItemAnalysis] = useState<ItemAnalysisResponse | null>(null);
+  const [customerAnalysis, setCustomerAnalysis] = useState<CustomerAnalysisResponse | null>(null);
   const [ticketAnalysis, setTicketAnalysis] = useState<TicketAnalysisResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [isMounted, setIsMounted] = useState(false);
@@ -264,6 +344,7 @@ export function RagResults({
       };
       setData(mapped);
       setItemAnalysis(null);
+      setCustomerAnalysis(null);
       setTicketAnalysis(null);
     } catch (e: any) {
       setError(e?.message ?? "Search failed");
@@ -289,10 +370,38 @@ export function RagResults({
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const json = (await res.json()) as ItemAnalysisResponse;
       setItemAnalysis(json);
+      setCustomerAnalysis(null);
       setTicketAnalysis(null);
       setData({ results: [] });
     } catch (e: any) {
       setError(e?.message ?? "Item analysis failed");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function runCustomerAnalysis() {
+    const customerQuery = extractCustomerQueryFromQuery(query);
+    if (!customerQuery) {
+      setError("Enter an account prefix or customer id (example: SGP or 'account prefix SGP').");
+      return;
+    }
+    setLoading(true);
+    setError(null);
+    try {
+      const res = await fetch(`${apiBase}/rag/new/customer-analysis`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ customer_query: customerQuery, match_mode: "account_prefix", threshold_days: 30, refresh: false }),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const json = (await res.json()) as CustomerAnalysisResponse;
+      setCustomerAnalysis(json);
+      setItemAnalysis(null);
+      setTicketAnalysis(null);
+      setData({ results: [] });
+    } catch (e: any) {
+      setError(e?.message ?? "Customer analysis failed");
     } finally {
       setLoading(false);
     }
@@ -316,6 +425,7 @@ export function RagResults({
       const json = (await res.json()) as TicketAnalysisResponse;
       setTicketAnalysis(json);
       setItemAnalysis(null);
+      setCustomerAnalysis(null);
       setData({ results: [] });
     } catch (e: any) {
       setError(e?.message ?? "Ticket analysis failed");
@@ -478,6 +588,13 @@ export function RagResults({
                 </button>
                 <button
                   className="px-5 py-3 rounded-xl bg-white/[0.04] hover:bg-cyan-500/10 border border-white/[0.08] hover:border-cyan-500/30 text-slate-200 hover:text-cyan-200 font-bold text-sm tracking-wide transition-all duration-300 disabled:opacity-50 disabled:cursor-not-allowed hidden md:block"
+                  onClick={runCustomerAnalysis}
+                  disabled={loading}
+                >
+                  Analyze Account
+                </button>
+                <button
+                  className="px-5 py-3 rounded-xl bg-white/[0.04] hover:bg-cyan-500/10 border border-white/[0.08] hover:border-cyan-500/30 text-slate-200 hover:text-cyan-200 font-bold text-sm tracking-wide transition-all duration-300 disabled:opacity-50 disabled:cursor-not-allowed hidden md:block"
                   onClick={runTicketAnalysis}
                   disabled={loading}
                 >
@@ -505,6 +622,16 @@ export function RagResults({
                 setQuery(query);
                 runSearch();
               }} 
+            />
+          )}
+
+          {customerAnalysis && (
+            <CustomerAnalysis
+              data={customerAnalysis}
+              onSuggestionClick={(query) => {
+                setQuery(query);
+                runSearch();
+              }}
             />
           )}
 

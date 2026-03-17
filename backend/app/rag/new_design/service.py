@@ -11,7 +11,7 @@ from typing import Any, Callable
 import numpy as np
 
 from .answer import answer_from_results
-from .analytics import analyze_item_actus, analyze_ticket_actus
+from .analytics import analyze_customer_actus, analyze_item_actus, analyze_ticket_actus
 from .index_build import build_pipeline_artifacts, index_pipeline_artifacts
 from .ingest import load_credit_requests, load_env, load_investigation_notes
 from .models import PipelineArtifacts, RetrievalChunk, SearchResult
@@ -522,6 +522,25 @@ class ActusHybridRAGService:
                 raise RuntimeError("Service is not initialized. Call refresh_from_firebase() or load_from_rows() first.")
             canonical_tickets = self._artifacts.canonical_tickets
         return analyze_item_actus(item_number, canonical_tickets)
+
+    def analyze_customer(
+        self,
+        customer_query: str,
+        *,
+        match_mode: str = "account_prefix",
+        threshold_days: int = 30,
+    ) -> dict[str, Any]:
+        self._ensure_canonical_ready()
+        with self._lock:
+            if self._artifacts is None:
+                raise RuntimeError("Service is not initialized. Call refresh_from_firebase() or load_from_rows() first.")
+            canonical_tickets = self._artifacts.canonical_tickets
+        return analyze_customer_actus(
+            customer_query,
+            canonical_tickets,
+            match_mode=match_mode,
+            threshold_days=threshold_days,
+        )
 
     def analyze_ticket(self, ticket_id: str, threshold_days: int = 30) -> dict[str, Any]:
         self._ensure_canonical_ready()

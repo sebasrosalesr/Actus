@@ -9,3 +9,4 @@ from .credit_amount_plot import intent_credit_amount_plot
 from .bulk_search import intent_bulk_search
 from .ticket_analysis import intent_ticket_analysis
 from .item_analysis import intent_item_analysis
+from .customer_analysis import intent_customer_analysis

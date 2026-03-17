@@ -757,6 +757,13 @@ class NewDesignItemAnalysisRequest(BaseModel):
     refresh: bool = False
 
 
+class NewDesignCustomerAnalysisRequest(BaseModel):
+    customer_query: str
+    match_mode: str = "account_prefix"
+    threshold_days: int = 30
+    refresh: bool = False
+
+
 class NewDesignTicketAnalysisRequest(BaseModel):
     ticket_id: str
     threshold_days: int = 30
@@ -921,6 +928,37 @@ def rag_new_item_analysis(payload: NewDesignItemAnalysisRequest) -> dict[str, An
             raise HTTPException(status_code=400, detail="item_number is required.")
         service = get_runtime_service(refresh=payload.refresh)
         return service.analyze_item(item_number)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"{type(exc).__name__}: {exc}")
+
+
+@router.post("/rag/new/customer-analysis")
+def rag_new_customer_analysis(payload: NewDesignCustomerAnalysisRequest) -> dict[str, Any]:
+    try:
+        customer_query = (payload.customer_query or "").strip()
+        if not customer_query:
+            raise HTTPException(status_code=400, detail="customer_query is required.")
+
+        match_mode = (payload.match_mode or "account_prefix").strip().lower()
+        if match_mode not in {"account_prefix", "customer_number", "auto"}:
+            raise HTTPException(
+                status_code=400,
+                detail="match_mode must be one of: account_prefix, customer_number, auto.",
+            )
+
+        threshold_days = int(payload.threshold_days or 30)
+        if threshold_days <= 0:
+            raise HTTPException(status_code=400, detail="threshold_days must be > 0.")
+
+        service = get_runtime_service(refresh=payload.refresh)
+        return service.analyze_customer(
+            customer_query=customer_query,
+            match_mode=match_mode,
+            threshold_days=threshold_days,
+        )
     except HTTPException:
         raise
     except Exception as exc:

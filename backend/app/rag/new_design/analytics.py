@@ -252,6 +252,386 @@ def analyze_item_actus(item_number: str, canonical_tickets: dict[str, CanonicalT
     }
 
 
+def _normalize_customer_number(customer_number: str) -> str:
+    return (customer_number or "").strip().upper()
+
+
+def _normalize_account_prefix(value: str) -> str:
+    text = _normalize_customer_number(value)
+    letters = "".join(ch for ch in text if ch.isalpha())
+    return letters or text
+
+
+def _resolve_customer_match_mode(
+    customer_query: str,
+    canonical_tickets: dict[str, CanonicalTicket | dict[str, Any]],
+    match_mode: str,
+) -> str:
+    requested = (match_mode or "account_prefix").strip().lower()
+    if requested in {"account_prefix", "customer_number"}:
+        return requested
+
+    normalized_prefix = _normalize_account_prefix(customer_query)
+    if normalized_prefix:
+        for ticket in canonical_tickets.values():
+            if normalized_prefix in _ticket_account_prefixes(ticket):
+                return "account_prefix"
+
+    normalized_customer = _normalize_customer_number(customer_query)
+    if normalized_customer:
+        for ticket in canonical_tickets.values():
+            customers = [
+                _normalize_customer_number(value)
+                for value in (_ticket_get(ticket, "customer_numbers", []) or [])
+                if _normalize_customer_number(value)
+            ]
+            if normalized_customer in customers:
+                return "customer_number"
+
+    return "account_prefix"
+
+
+def _summarize_ticket_credit_state(
+    ticket: CanonicalTicket | dict[str, Any],
+    threshold_days: int,
+) -> dict[str, Any]:
+    lines = _iter_ticket_lines(ticket)
+    line_count = len(lines)
+    line_credit_total = round(
+        sum(_safe_float(_line_get(line, "credit_request_total")) for line in lines),
+        2,
+    )
+    credit_totals = _ticket_get(ticket, "credit_request_totals", []) or []
+    summary_credit_total = round(sum(_safe_float(v) for v in credit_totals), 2)
+    total_credit = line_credit_total if line_credit_total else summary_credit_total
+
+    credited_line_count = 0
+    credited_line_exposure = 0.0
+    for line in lines:
+        amount = _safe_float(_line_get(line, "credit_request_total"))
+        if _is_valid_credit_value(_line_get(line, "credit_number")):
+            credited_line_count += 1
+            credited_line_exposure += amount
+
+    ticket_credit_numbers = _ticket_get(ticket, "credit_numbers", []) or []
+    if credited_line_count == 0 and line_count > 0:
+        inferred_credit_count = min(sum(1 for v in ticket_credit_numbers if _is_valid_credit_value(v)), line_count)
+        if inferred_credit_count > 0:
+            credited_line_count = inferred_credit_count
+            credited_line_exposure = round(total_credit * (credited_line_count / line_count), 2)
+
+    pending_line_count = max(line_count - credited_line_count, 0)
+    pending_line_exposure = round(max(total_credit - credited_line_exposure, 0.0), 2)
+    credited_line_exposure = round(credited_line_exposure, 2)
+
+    is_partially_credited = credited_line_count > 0 and pending_line_count > 0
+    is_fully_credited = credited_line_count > 0 and pending_line_count == 0
+
+    timeline = compute_ticket_timeline_metrics_from_status_list(
+        _ticket_get(ticket, "status_raw_list", []) or [],
+        threshold_days=threshold_days,
+        has_credit_number=is_fully_credited or _has_credit_number(ticket_credit_numbers),
+        pending_only=is_partially_credited,
+    )
+
+    return {
+        "line_count": line_count,
+        "credit_total": total_credit,
+        "credited_line_count": credited_line_count,
+        "pending_line_count": pending_line_count,
+        "credited_line_exposure": credited_line_exposure,
+        "pending_line_exposure": pending_line_exposure,
+        "is_partially_credited": is_partially_credited,
+        "is_fully_credited": is_fully_credited,
+        "timeline": timeline,
+    }
+
+
+def analyze_customer_actus(
+    customer_query: str,
+    canonical_tickets: dict[str, CanonicalTicket | dict[str, Any]],
+    match_mode: str = "account_prefix",
+    threshold_days: int = 30,
+) -> dict[str, Any]:
+    normalized_customer = _normalize_customer_number(customer_query)
+    normalized_prefix = _normalize_account_prefix(customer_query)
+    resolved_mode = _resolve_customer_match_mode(customer_query, canonical_tickets, match_mode)
+
+    matched_customer_numbers: set[str] = set()
+    matched_account_prefixes: set[str] = set()
+    ticket_ids: set[str] = set()
+    invoice_numbers: set[str] = set()
+    item_numbers: set[str] = set()
+
+    sales_rep_counts = Counter()
+    primary_root_cause_counts = Counter()
+    root_cause_counts_all = Counter()
+    item_counts = Counter()
+    invoice_counts = Counter()
+
+    item_credit_totals: dict[str, float] = {}
+    invoice_credit_totals: dict[str, float] = {}
+    ticket_summaries: list[dict[str, Any]] = []
+    dates: list[datetime] = []
+
+    credit_total = 0.0
+    line_count = 0
+    credited_line_count = 0
+    pending_line_count = 0
+    credited_line_exposure = 0.0
+    pending_line_exposure = 0.0
+    fully_credited_ticket_count = 0
+    partially_credited_ticket_count = 0
+    open_ticket_count = 0
+
+    for ticket_id, ticket in canonical_tickets.items():
+        ticket_customers = [
+            _normalize_customer_number(value)
+            for value in (_ticket_get(ticket, "customer_numbers", []) or [])
+            if _normalize_customer_number(value)
+        ]
+        ticket_prefixes = _ticket_account_prefixes(ticket)
+
+        if resolved_mode == "customer_number":
+            is_match = bool(normalized_customer) and normalized_customer in ticket_customers
+        else:
+            is_match = bool(normalized_prefix) and normalized_prefix in ticket_prefixes
+
+        if not is_match:
+            continue
+
+        ticket_id_text = str(ticket_id).strip().upper()
+        ticket_ids.add(ticket_id_text)
+        matched_customer_numbers.update(ticket_customers)
+        matched_account_prefixes.update(ticket_prefixes)
+
+        summary = _summarize_ticket_credit_state(ticket, threshold_days=threshold_days)
+        credit_total += float(summary["credit_total"])
+        line_count += int(summary["line_count"])
+        credited_line_count += int(summary["credited_line_count"])
+        pending_line_count += int(summary["pending_line_count"])
+        credited_line_exposure += float(summary["credited_line_exposure"])
+        pending_line_exposure += float(summary["pending_line_exposure"])
+
+        if summary["is_fully_credited"]:
+            fully_credited_ticket_count += 1
+        elif summary["is_partially_credited"]:
+            partially_credited_ticket_count += 1
+        else:
+            open_ticket_count += 1
+
+        primary_root = str(_ticket_get(ticket, "root_cause_primary_id", "")).strip()
+        if primary_root and primary_root.lower() != "unidentified":
+            primary_root_cause_counts[primary_root] += 1
+
+        for root in (_ticket_get(ticket, "root_cause_ids", []) or []):
+            root_text = str(root).strip()
+            if root_text and root_text.lower() != "unidentified":
+                root_cause_counts_all[root_text] += 1
+
+        reps_for_ticket: list[str] = []
+        for rep in (_ticket_get(ticket, "sales_reps", []) or []):
+            rep_text = str(rep).strip().upper()
+            if rep_text:
+                sales_rep_counts[rep_text] += 1
+                reps_for_ticket.append(rep_text)
+
+        lines = _iter_ticket_lines(ticket)
+        for line in lines:
+            amount = _safe_float(_line_get(line, "credit_request_total"))
+
+            invoice = _norm_text(_line_get(line, "invoice_number"))
+            if invoice:
+                invoice_numbers.add(invoice)
+                invoice_counts[invoice] += 1
+                invoice_credit_totals[invoice] = invoice_credit_totals.get(invoice, 0.0) + amount
+
+            item = _norm_text(_line_get(line, "item_number"))
+            if item:
+                item_numbers.add(item)
+                item_counts[item] += 1
+                item_credit_totals[item] = item_credit_totals.get(item, 0.0) + amount
+
+            for note in _line_get(line, "investigation_notes", []) or []:
+                created = _parse_datetime(_line_get(note, "created_at"))
+                updated = _parse_datetime(_line_get(note, "updated_at"))
+                if created is not None:
+                    dates.append(created)
+                if updated is not None:
+                    dates.append(updated)
+
+        for status in (_ticket_get(ticket, "status_raw_list", []) or []):
+            dates.extend(_extract_datetimes_from_text(status))
+
+        timeline = summary["timeline"]
+        ticket_summaries.append(
+            {
+                "ticket_id": ticket_id_text,
+                "customer_numbers": ticket_customers,
+                "account_prefixes": ticket_prefixes,
+                "primary_root_cause": primary_root or "unidentified",
+                "supporting_root_causes": [
+                    str(root).strip()
+                    for root in (_ticket_get(ticket, "root_cause_ids", []) or [])
+                    if str(root).strip() and str(root).strip() != primary_root and str(root).strip().lower() != "unidentified"
+                ],
+                "sales_reps": reps_for_ticket,
+                "credit_total": round(float(summary["credit_total"]), 2),
+                "line_count": int(summary["line_count"]),
+                "credited_line_count": int(summary["credited_line_count"]),
+                "pending_line_count": int(summary["pending_line_count"]),
+                "credited_line_exposure": round(float(summary["credited_line_exposure"]), 2),
+                "pending_line_exposure": round(float(summary["pending_line_exposure"]), 2),
+                "is_fully_credited": bool(summary["is_fully_credited"]),
+                "is_partially_credited": bool(summary["is_partially_credited"]),
+                "last_status_timestamp": timeline.get("last_status_timestamp"),
+                "last_status_event_type": timeline.get("last_status_event_type"),
+            }
+        )
+
+    if not ticket_ids:
+        label = "account prefix" if resolved_mode == "account_prefix" else "customer number"
+        normalized_value = normalized_prefix if resolved_mode == "account_prefix" else normalized_customer
+        return {
+            "query": customer_query,
+            "match_mode": resolved_mode,
+            "normalized_query": normalized_value,
+            "ticket_count": 0,
+            "invoice_count": 0,
+            "item_count": 0,
+            "line_count": 0,
+            "credit_total": 0.0,
+            "credited_line_count": 0,
+            "pending_line_count": 0,
+            "credited_line_exposure": 0.0,
+            "pending_line_exposure": 0.0,
+            "fully_credited_ticket_count": 0,
+            "partially_credited_ticket_count": 0,
+            "open_ticket_count": 0,
+            "matched_customer_numbers": [],
+            "matched_account_prefixes": [],
+            "root_cause_counts_primary": {},
+            "root_cause_counts_all": {},
+            "sales_rep_counts": {},
+            "item_counts": {},
+            "item_credit_totals": {},
+            "tickets": [],
+            "invoice_numbers": [],
+            "item_numbers": [],
+            "top_items": [],
+            "top_tickets": [],
+            "top_invoices": [],
+            "first_seen": None,
+            "last_seen": None,
+            "answer": f"No credit activity found for {label} {normalized_value or customer_query}.",
+        }
+
+    credit_total = round(credit_total, 2)
+    credited_line_exposure = round(credited_line_exposure, 2)
+    pending_line_exposure = round(pending_line_exposure, 2)
+    first_seen = min(dates).strftime("%Y-%m-%d") if dates else "unknown"
+    last_seen = max(dates).strftime("%Y-%m-%d") if dates else "unknown"
+
+    for key in list(item_credit_totals):
+        item_credit_totals[key] = round(item_credit_totals[key], 2)
+    for key in list(invoice_credit_totals):
+        invoice_credit_totals[key] = round(invoice_credit_totals[key], 2)
+
+    ticket_summaries.sort(key=lambda row: (-float(row["credit_total"]), row["ticket_id"]))
+
+    top_items = [
+        {
+            "item_number": item,
+            "line_count": count,
+            "credit_total": item_credit_totals.get(item, 0.0),
+        }
+        for item, count in item_counts.most_common(10)
+    ]
+    top_invoices = [
+        {
+            "invoice_number": invoice,
+            "line_count": count,
+            "credit_total": invoice_credit_totals.get(invoice, 0.0),
+        }
+        for invoice, count in invoice_counts.most_common(10)
+    ]
+    top_tickets = ticket_summaries[:10]
+
+    normalized_value = normalized_prefix if resolved_mode == "account_prefix" else normalized_customer
+    label = "Account prefix" if resolved_mode == "account_prefix" else "Customer number"
+    root_summary = (
+        "\n".join(f"- {root} ({count})" for root, count in primary_root_cause_counts.most_common(5))
+        if primary_root_cause_counts
+        else "- none attached"
+    )
+    rep_summary = (
+        ", ".join(f"{rep} ({count})" for rep, count in sales_rep_counts.most_common(5))
+        if sales_rep_counts
+        else "none attached"
+    )
+    item_summary = (
+        ", ".join(f"{row['item_number']} (${row['credit_total']:,.2f})" for row in top_items[:5])
+        if top_items
+        else "none attached"
+    )
+    ticket_summary = (
+        ", ".join(f"{row['ticket_id']} (${row['credit_total']:,.2f})" for row in top_tickets[:5])
+        if top_tickets
+        else "none attached"
+    )
+
+    answer = (
+        f"{label} {normalized_value} analysis\n\n"
+        f"Matched {len(ticket_ids)} tickets across {line_count} invoice lines, "
+        f"{len(invoice_numbers)} invoices, and {len(item_numbers)} items.\n"
+        f"Total credit exposure is ${credit_total:,.2f}.\n"
+        f"Credited exposure is ${credited_line_exposure:,.2f} across {credited_line_count} line(s); "
+        f"pending exposure is ${pending_line_exposure:,.2f} across {pending_line_count} line(s).\n"
+        f"Ticket mix: {fully_credited_ticket_count} fully credited, "
+        f"{partially_credited_ticket_count} partially credited, {open_ticket_count} open.\n\n"
+        f"Most common primary root causes:\n{root_summary}\n\n"
+        f"Sales reps involved:\n{rep_summary}\n\n"
+        f"Top items by exposure:\n{item_summary}\n\n"
+        f"Top tickets by exposure:\n{ticket_summary}\n\n"
+        f"First observed activity: {first_seen}\n"
+        f"Most recent activity: {last_seen}"
+    )
+
+    return {
+        "query": customer_query,
+        "match_mode": resolved_mode,
+        "normalized_query": normalized_value,
+        "matched_customer_numbers": sorted(matched_customer_numbers),
+        "matched_account_prefixes": sorted(matched_account_prefixes),
+        "ticket_count": len(ticket_ids),
+        "invoice_count": len(invoice_numbers),
+        "item_count": len(item_numbers),
+        "line_count": line_count,
+        "credit_total": credit_total,
+        "credited_line_count": credited_line_count,
+        "pending_line_count": pending_line_count,
+        "credited_line_exposure": credited_line_exposure,
+        "pending_line_exposure": pending_line_exposure,
+        "fully_credited_ticket_count": fully_credited_ticket_count,
+        "partially_credited_ticket_count": partially_credited_ticket_count,
+        "open_ticket_count": open_ticket_count,
+        "root_cause_counts_primary": dict(primary_root_cause_counts),
+        "root_cause_counts_all": dict(root_cause_counts_all),
+        "sales_rep_counts": dict(sales_rep_counts),
+        "item_counts": dict(item_counts),
+        "item_credit_totals": item_credit_totals,
+        "tickets": sorted(ticket_ids),
+        "invoice_numbers": sorted(invoice_numbers),
+        "item_numbers": sorted(item_numbers),
+        "top_items": top_items,
+        "top_tickets": top_tickets,
+        "top_invoices": top_invoices,
+        "first_seen": first_seen,
+        "last_seen": last_seen,
+        "answer": answer,
+    }
+
+
 _STATUS_EVENT_PATTERN = re.compile(
     r"(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\s*\n?(.*?)(?=(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})|$)",
     flags=re.DOTALL,

@@ -30,6 +30,7 @@ from actus.intents.credit_root_causes import intent_root_cause_summary, INTENT_A
 from actus.intents.bulk_search import intent_bulk_search, INTENT_ALIASES as BULK_SEARCH_ALIASES
 from actus.intents.ticket_analysis import intent_ticket_analysis, INTENT_ALIASES as TICKET_ANALYSIS_ALIASES
 from actus.intents.item_analysis import intent_item_analysis, INTENT_ALIASES as ITEM_ANALYSIS_ALIASES
+from actus.intents.customer_analysis import intent_customer_analysis, INTENT_ALIASES as CUSTOMER_ANALYSIS_ALIASES
 from actus.help_text import HELP_TEXT
 from actus.openrouter_client import openrouter_chat
 
@@ -45,6 +46,7 @@ def _fallback_model_name() -> str:
 # INTENT LIST
 # --------------------------------------------------
 INTENTS: List[Callable[[str, pd.DataFrame], Optional[Tuple[str, Optional[pd.DataFrame]]]]] = [
+    intent_customer_analysis,
     intent_item_analysis,
     intent_ticket_analysis,
     intent_ticket_status,
@@ -72,6 +74,7 @@ INTENTS: List[Callable[[str, pd.DataFrame], Optional[Tuple[str, Optional[pd.Data
 ]
 
 INTENT_DEFS = [
+    {"id": "customer_analysis", "label": "Analyze account", "prefix": "analyze account", "func": intent_customer_analysis, "aliases": CUSTOMER_ANALYSIS_ALIASES},
     {"id": "item_analysis", "label": "Analyze item", "prefix": "analyze item", "func": intent_item_analysis, "aliases": ITEM_ANALYSIS_ALIASES},
     {"id": "ticket_analysis", "label": "Analyze ticket", "prefix": "analyze ticket", "func": intent_ticket_analysis, "aliases": TICKET_ANALYSIS_ALIASES},
     {"id": "ticket_status", "label": "Ticket status", "prefix": "ticket status", "func": intent_ticket_status, "aliases": TICKET_STATUS_ALIASES},

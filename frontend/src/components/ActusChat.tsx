@@ -5,7 +5,7 @@ import remarkGfm from 'remark-gfm';
 import Mockup from './Mockup';
 import RootCauses, { type RootCauseItem } from './RootCauses';
 import { RagResults } from './RagResults';
-import { Analysis, ItemAnalysis, type TicketAnalysisMeta, type ItemAnalysisMeta } from './Analysis';
+import { Analysis, CustomerAnalysis, ItemAnalysis, type TicketAnalysisMeta, type ItemAnalysisMeta, type CustomerAnalysisMeta } from './Analysis';
 import { AnomalyScan } from './AnomalyScan';
 
 type ActusChatProps = {
@@ -113,6 +113,7 @@ export default function ActusChat({ userEmail, onLogout }: ActusChatProps) {
             };
             ticket_analysis?: TicketAnalysisMeta;
             item_analysis?: ItemAnalysisMeta;
+            customer_analysis?: CustomerAnalysisMeta;
         };
     };
 
@@ -1277,6 +1278,14 @@ export default function ActusChat({ userEmail, onLogout }: ActusChatProps) {
                                     {message.role === 'assistant' && message.meta?.item_analysis && (
                                         <ItemAnalysis
                                             data={message.meta.item_analysis}
+                                            suggestions={message.meta.suggestions}
+                                            onSuggestionClick={(query) => sendMessage(query, { showUser: true, bypassPending: true })}
+                                        />
+                                    )}
+
+                                    {message.role === 'assistant' && message.meta?.customer_analysis && (
+                                        <CustomerAnalysis
+                                            data={message.meta.customer_analysis}
                                             suggestions={message.meta.suggestions}
                                             onSuggestionClick={(query) => sendMessage(query, { showUser: true, bypassPending: true })}
                                         />

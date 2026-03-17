@@ -123,6 +123,8 @@ def _infer_intent_id(query: str, meta: Dict[str, Any] | None) -> str | None:
             return "ticket_analysis"
         if isinstance(meta.get("item_analysis"), dict):
             return "item_analysis"
+        if isinstance(meta.get("customer_analysis"), dict):
+            return "customer_analysis"
         for key in ("creditTrends", "creditAnomalies", "creditOpsSnapshot"):
             if key in meta:
                 return key
@@ -132,6 +134,8 @@ def _infer_intent_id(query: str, meta: Dict[str, Any] | None) -> str | None:
         return "ticket_analysis"
     if normalized.startswith("analyze item"):
         return "item_analysis"
+    if normalized.startswith("analyze account") or normalized.startswith("analyze customer"):
+        return "customer_analysis"
     return None
 
 

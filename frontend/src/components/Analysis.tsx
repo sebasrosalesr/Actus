@@ -50,6 +50,55 @@ export type ItemAnalysisMeta = {
     answer?: string;
 };
 
+export type CustomerAnalysisMeta = {
+    query?: string;
+    match_mode?: string;
+    normalized_query?: string;
+    matched_customer_numbers?: string[];
+    matched_account_prefixes?: string[];
+    ticket_count?: number;
+    invoice_count?: number;
+    item_count?: number;
+    line_count?: number;
+    credit_total?: number;
+    credited_line_count?: number;
+    pending_line_count?: number;
+    credited_line_exposure?: number;
+    pending_line_exposure?: number;
+    fully_credited_ticket_count?: number;
+    partially_credited_ticket_count?: number;
+    open_ticket_count?: number;
+    root_cause_counts_primary?: Record<string, number>;
+    root_cause_counts_all?: Record<string, number>;
+    sales_rep_counts?: Record<string, number>;
+    item_counts?: Record<string, number>;
+    item_credit_totals?: Record<string, number>;
+    tickets?: string[];
+    invoice_numbers?: string[];
+    item_numbers?: string[];
+    top_items?: Array<{
+        item_number: string;
+        line_count: number;
+        credit_total: number;
+    }>;
+    top_tickets?: Array<{
+        ticket_id: string;
+        primary_root_cause?: string;
+        credit_total: number;
+        line_count: number;
+        credited_line_count: number;
+        pending_line_count: number;
+    }>;
+    top_invoices?: Array<{
+        invoice_number: string;
+        line_count: number;
+        credit_total: number;
+    }>;
+    first_seen?: string | null;
+    last_seen?: string | null;
+    answer?: string;
+};
+
 const formatCurrency = (value: number | null | undefined) => {
     if (value == null) return '$0.00';
     return new Intl.NumberFormat('en-US', {
@@ -397,6 +446,211 @@ export function ItemAnalysis({
                             <div className="text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-2">Top Account Prefixes</div>
                             <p className="text-sm text-slate-300">
                                 {topPrefixes.map(([prefix, count]) => `${prefix} (${count})`).join(', ') || 'none'}
+                            </p>
+                        </div>
+                    </div>
+
+                    <div className="bg-white/[0.02] border border-white/[0.04] rounded-2xl p-5">
+                        <div className="text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-2">Activity Window</div>
+                        <p className="text-sm text-slate-300">
+                            First observed: <span className="font-mono">{data.first_seen ?? 'unknown'}</span>
+                            {' • '}
+                            Last observed: <span className="font-mono">{data.last_seen ?? 'unknown'}</span>
+                        </p>
+                    </div>
+
+                    {data.answer && (
+                        <div className="bg-gradient-to-r from-cyan-900/10 to-transparent border-l-2 border-cyan-500 p-5 rounded-r-2xl">
+                            <div className="flex items-center gap-2 mb-4">
+                                <FileText className="w-4 h-4 text-cyan-400" />
+                                <h3 className="text-xs font-bold text-cyan-400 uppercase tracking-widest">Summary</h3>
+                            </div>
+                            <p className="text-sm text-slate-200 whitespace-pre-wrap">{data.answer}</p>
+                        </div>
+                    )}
+
+                    {suggestions.length > 0 && (
+                        <div className="pt-4 border-t border-white/[0.05]">
+                            <h3 className="text-[10px] uppercase tracking-[0.2em] text-slate-500 font-bold mb-4 flex items-center gap-2">
+                                <Zap className="w-3.5 h-3.5 text-amber-400" /> Suggested Action
+                            </h3>
+                            <div className="flex flex-wrap gap-2.5">
+                                {suggestions.slice(0, 3).map((item, idx) => (
+                                    <button
+                                        key={idx}
+                                        type="button"
+                                        onClick={() => onSuggestionClick(String(item.prefix || '').trim())}
+                                        className="group flex items-center gap-2 px-4 py-2 rounded-xl bg-white/[0.03] hover:bg-cyan-500/10 border border-white/[0.08] hover:border-cyan-500/30 transition-all duration-300 active:scale-95"
+                                    >
+                                        <span className="text-xs font-bold text-slate-500 group-hover:text-cyan-500/50 transition-colors">0{idx + 1}</span>
+                                        <span className="text-sm font-medium text-slate-300 group-hover:text-cyan-200 transition-colors">
+                                            {item.label || item.prefix}
+                                        </span>
+                                        <TrendingUp className="w-3.5 h-3.5 text-slate-600 group-hover:text-cyan-400 transition-colors ml-1 opacity-0 group-hover:opacity-100 -translate-x-2 group-hover:translate-x-0" />
+                                    </button>
+                                ))}
+                            </div>
+                        </div>
+                    )}
+                </div>
+            </div>
+        </div>
+    );
+}
+
+export function CustomerAnalysis({
+    data,
+    suggestions = [],
+    onSuggestionClick,
+}: {
+    data: CustomerAnalysisMeta;
+    suggestions?: { label?: string; prefix?: string }[];
+    onSuggestionClick: (query: string) => void;
+}) {
+    const primaryRoots = sortCountEntries(data.root_cause_counts_primary);
+    const allRoots = sortCountEntries(data.root_cause_counts_all);
+    const topSalesReps = sortCountEntries(data.sales_rep_counts).slice(0, 5);
+    const matchLabel = data.match_mode === 'customer_number' ? 'Customer' : 'Account Prefix';
+
+    return (
+        <div className="w-full max-w-5xl relative group/analysis">
+            <div className="absolute -inset-0.5 bg-gradient-to-br from-cyan-500/20 via-indigo-500/10 to-transparent rounded-3xl blur-xl opacity-50 group-hover/analysis:opacity-100 transition duration-700 pointer-events-none"></div>
+
+            <div className="relative bg-obsidian-950/80 border border-white/[0.08] rounded-3xl overflow-hidden shadow-2xl backdrop-blur-xl transition-all duration-500 hover:border-cyan-500/30">
+                <div className="p-6 md:p-8 flex flex-col md:flex-row md:items-center justify-between gap-6 border-b border-white/[0.04] bg-gradient-to-b from-white/[0.02] to-transparent">
+                    <div className="flex items-start gap-4">
+                        <div className="w-12 h-12 rounded-2xl bg-gradient-to-br from-cyan-400/20 to-indigo-600/20 border border-cyan-500/30 flex items-center justify-center flex-shrink-0 shadow-[0_0_15px_rgba(34,211,238,0.15)] group-hover/analysis:shadow-[0_0_25px_rgba(34,211,238,0.3)] transition-all">
+                            <Activity className="w-6 h-6 text-cyan-400" />
+                        </div>
+                        <div>
+                            <div className="flex items-center gap-3 flex-wrap">
+                                <h2 className="text-2xl font-bold font-display tracking-tight text-white drop-shadow-sm">
+                                    {matchLabel} <span className="text-transparent bg-clip-text bg-gradient-to-r from-cyan-400 to-indigo-400">{data.normalized_query || data.query || 'Unknown'}</span> Analysis
+                                </h2>
+                                <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-cyan-500/10 border border-cyan-500/20 text-cyan-300 text-xs font-semibold">
+                                    <Tags className="w-3 h-3" /> {data.match_mode || 'account_prefix'}
+                                </span>
+                            </div>
+                            <p className="text-sm text-slate-400 mt-1.5 flex items-center gap-2 font-medium">
+                                <Hash className="w-3.5 h-3.5" />
+                                {Number(data.ticket_count ?? 0)} tickets • {Number(data.invoice_count ?? 0)} invoices • {Number(data.item_count ?? 0)} items • {Number(data.line_count ?? 0)} lines
+                            </p>
+                        </div>
+                    </div>
+
+                    <div className="px-6 py-4 rounded-2xl bg-obsidian-900 border border-emerald-500/20 shadow-[0_0_20px_rgba(16,185,129,0.05)] flex flex-col items-end min-w-[180px] group-hover/analysis:border-emerald-500/40 transition-colors">
+                        <span className="text-[10px] uppercase tracking-[0.2em] text-emerald-500/80 font-bold mb-1">Total Exposure</span>
+                        <div className="text-emerald-400 font-mono text-3xl font-bold tracking-tight">
+                            {formatCurrency(data.credit_total)}
+                        </div>
+                    </div>
+                </div>
+
+                <div className="p-6 md:p-8 space-y-8">
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        <div className="bg-obsidian-900/50 border border-white/[0.05] rounded-2xl p-5">
+                            <div className="flex items-center gap-2 mb-4">
+                                <Clock className="w-4 h-4 text-cyan-400" />
+                                <h3 className="text-xs font-bold text-cyan-400 uppercase tracking-widest">Credit Coverage</h3>
+                            </div>
+                            <div className="space-y-3 text-sm">
+                                <div className="flex justify-between items-center">
+                                    <span className="text-slate-400">Credited</span>
+                                    <span className="font-mono text-emerald-300">{formatCurrency(data.credited_line_exposure)} • {Number(data.credited_line_count ?? 0)} lines</span>
+                                </div>
+                                <div className="flex justify-between items-center">
+                                    <span className="text-slate-400">Pending</span>
+                                    <span className="font-mono text-amber-300">{formatCurrency(data.pending_line_exposure)} • {Number(data.pending_line_count ?? 0)} lines</span>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div className="bg-obsidian-900/50 border border-white/[0.05] rounded-2xl p-5">
+                            <div className="flex items-center gap-2 mb-4">
+                                <Sparkles className="w-4 h-4 text-indigo-400" />
+                                <h3 className="text-xs font-bold text-indigo-400 uppercase tracking-widest">Ticket Mix</h3>
+                            </div>
+                            <div className="space-y-3 text-sm">
+                                <div className="flex justify-between items-center">
+                                    <span className="text-slate-400">Fully Credited</span>
+                                    <span className="font-mono text-slate-200">{Number(data.fully_credited_ticket_count ?? 0)}</span>
+                                </div>
+                                <div className="flex justify-between items-center">
+                                    <span className="text-slate-400">Partially Credited</span>
+                                    <span className="font-mono text-slate-200">{Number(data.partially_credited_ticket_count ?? 0)}</span>
+                                </div>
+                                <div className="flex justify-between items-center">
+                                    <span className="text-slate-400">Open</span>
+                                    <span className="font-mono text-slate-200">{Number(data.open_ticket_count ?? 0)}</span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        <div className="bg-obsidian-900/50 border border-white/[0.05] rounded-2xl p-5">
+                            <div className="flex items-center gap-2 mb-4">
+                                <Target className="w-4 h-4 text-amber-400" />
+                                <h3 className="text-xs font-bold text-amber-400 uppercase tracking-widest">Primary Root Causes</h3>
+                            </div>
+                            <div className="flex flex-wrap gap-2">
+                                {primaryRoots.map(([root, count]) => (
+                                    <span key={`primary-${root}`} className="px-2 py-1 rounded-lg bg-amber-500/10 border border-amber-500/20 text-amber-200 text-xs">
+                                        {root} ({count})
+                                    </span>
+                                ))}
+                                {primaryRoots.length === 0 && <span className="text-sm text-slate-500">No primary root causes found.</span>}
+                            </div>
+                        </div>
+
+                        <div className="bg-obsidian-900/50 border border-white/[0.05] rounded-2xl p-5">
+                            <div className="flex items-center gap-2 mb-4">
+                                <Sparkles className="w-4 h-4 text-cyan-400" />
+                                <h3 className="text-xs font-bold text-cyan-400 uppercase tracking-widest">All Root Causes</h3>
+                            </div>
+                            <div className="flex flex-wrap gap-2">
+                                {allRoots.map(([root, count]) => (
+                                    <span key={`all-${root}`} className="px-2 py-1 rounded-lg bg-cyan-500/10 border border-cyan-500/20 text-cyan-200 text-xs">
+                                        {root} ({count})
+                                    </span>
+                                ))}
+                                {allRoots.length === 0 && <span className="text-sm text-slate-500">No root causes found.</span>}
+                            </div>
+                        </div>
+                    </div>
+
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        <div className="bg-white/[0.02] border border-white/[0.04] rounded-2xl p-5">
+                            <div className="text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-2">Top Sales Reps</div>
+                            <p className="text-sm text-slate-300">
+                                {topSalesReps.map(([rep, count]) => `${rep} (${count})`).join(', ') || 'none'}
+                            </p>
+                        </div>
+                        <div className="bg-white/[0.02] border border-white/[0.04] rounded-2xl p-5">
+                            <div className="text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-2">Matched Accounts</div>
+                            <p className="text-sm text-slate-300">
+                                {previewList(data.matched_customer_numbers, 8)}
+                            </p>
+                        </div>
+                    </div>
+
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        <div className="bg-white/[0.02] border border-white/[0.04] rounded-2xl p-5">
+                            <div className="text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-2">Top Items</div>
+                            <p className="text-sm text-slate-300">
+                                {(data.top_items ?? [])
+                                    .slice(0, 5)
+                                    .map((row) => `${row.item_number} (${formatCurrency(row.credit_total)})`)
+                                    .join(', ') || 'none'}
+                            </p>
+                        </div>
+                        <div className="bg-white/[0.02] border border-white/[0.04] rounded-2xl p-5">
+                            <div className="text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-2">Top Tickets</div>
+                            <p className="text-sm text-slate-300">
+                                {(data.top_tickets ?? [])
+                                    .slice(0, 5)
+                                    .map((row) => `${row.ticket_id} (${formatCurrency(row.credit_total)})`)
+                                    .join(', ') || 'none'}
                             </p>
                         </div>
                     </div>

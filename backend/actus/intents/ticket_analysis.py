@@ -50,8 +50,8 @@ def _is_explicit_analyze_query(query: str) -> bool:
     return any(alias in q_low for alias in INTENT_ALIASES)
 
 
-def _build_suggestions(ticket_id: str) -> list[dict[str, str]]:
-    return [
+def _build_suggestions(ticket_id: str, *, is_partially_credited: bool = False) -> list[dict[str, str]]:
+    suggestions = [
         {
             "id": "ticket_status",
             "label": f"Ticket status ({ticket_id})",
@@ -63,6 +63,15 @@ def _build_suggestions(ticket_id: str) -> list[dict[str, str]]:
             "prefix": f"investigation notes for ticket {ticket_id}",
         },
     ]
+    if is_partially_credited:
+        suggestions.append(
+            {
+                "id": "mixed_lines",
+                "label": f"Mixed lines display ({ticket_id})",
+                "prefix": f"mixed lines {ticket_id}",
+            }
+        )
+    return suggestions
 
 
 def _shorten_line(text: str, max_chars: int = 180) -> str:
@@ -465,6 +474,9 @@ def intent_ticket_analysis(query: str, df: pd.DataFrame):
         {
             "show_table": False,
             "ticket_analysis": analysis_payload,
-            "suggestions": _build_suggestions(ticket_id),
+            "suggestions": _build_suggestions(
+                ticket_id,
+                is_partially_credited=bool(analysis_payload.get("is_partially_credited")),
+            ),
         },
     )

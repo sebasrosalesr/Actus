@@ -18,6 +18,11 @@ export type TicketAnalysisMeta = {
     days_pending_billing_to_credit?: number | null;
     threshold_exceeded?: boolean;
     is_credited?: boolean;
+    is_partially_credited?: boolean;
+    credited_line_count?: number;
+    pending_line_count?: number;
+    credited_line_exposure?: number;
+    pending_line_exposure?: number;
     last_status_timestamp?: string | null;
     last_status_event_type?: string | null;
     invoice_numbers?: string[];
@@ -103,7 +108,11 @@ export function Analysis({
                                 <h2 className="text-2xl font-bold font-display tracking-tight text-white drop-shadow-sm">
                                     Ticket <span className="text-transparent bg-clip-text bg-gradient-to-r from-cyan-400 to-indigo-400">{data.ticket_id || 'Unknown'}</span> Analysis
                                 </h2>
-                                {data.is_credited ? (
+                                {data.is_partially_credited ? (
+                                    <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-amber-500/10 border border-amber-500/20 text-amber-300 text-xs font-semibold shadow-[0_0_10px_rgba(245,158,11,0.1)]">
+                                        <Clock className="w-3 h-3" /> Partially Credited
+                                    </span>
+                                ) : data.is_credited ? (
                                     <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 text-xs font-semibold shadow-[0_0_10px_rgba(16,185,129,0.1)]">
                                         <CheckCircle2 className="w-3 h-3" /> Credited
                                     </span>
@@ -116,6 +125,11 @@ export function Analysis({
                             <p className="text-sm text-slate-400 mt-1.5 flex items-center gap-2 font-medium">
                                 <Hash className="w-3.5 h-3.5" />
                                 {Number(data.line_count ?? 0)} invoice lines
+                                {Number(data.pending_line_count ?? 0) > 0 && (
+                                    <span className="text-amber-400/90">
+                                        • {Number(data.pending_line_count ?? 0)} pending
+                                    </span>
+                                )}
                             </p>
                         </div>
                     </div>
@@ -198,6 +212,14 @@ export function Analysis({
                                         <span className="px-2 py-0.5 rounded bg-slate-500/10 text-slate-400 text-xs font-bold uppercase">No</span>
                                     )}
                                 </div>
+                                {Number(data.credited_line_count ?? 0) > 0 || Number(data.pending_line_count ?? 0) > 0 ? (
+                                    <div className="flex justify-between items-center text-sm">
+                                        <span className="text-slate-400">Credit Coverage</span>
+                                        <span className="text-slate-200 font-mono">
+                                            {Number(data.credited_line_count ?? 0)}/{Number(data.line_count ?? 0)} credited
+                                        </span>
+                                    </div>
+                                ) : null}
                                 <div className="flex justify-between items-center text-sm pt-1 border-t border-white/[0.05]">
                                     <span className="text-slate-400">Last Status</span>
                                     <div className="text-right">

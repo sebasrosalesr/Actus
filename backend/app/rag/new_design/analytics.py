@@ -348,14 +348,19 @@ def _status_indicates_credit_or_closure(text: str) -> bool:
 
 def _has_credit_number(values: list[Any]) -> bool:
     for value in values or []:
-        text = str(value or "").strip()
-        if not text:
-            continue
-        if text.lower() in {"nan", "none", "null", "na", "n/a", "0"}:
-            continue
-        if _CREDIT_NUMBER_PATTERN.search(text):
+        if _is_valid_credit_value(value):
             return True
     return False
+
+
+def _is_valid_credit_value(value: Any) -> bool:
+    text = str(value or "").strip()
+    if not text:
+        return False
+    if text.lower() in {"nan", "none", "null", "na", "n/a", "0"}:
+        return False
+    # Most values are RTN-like, but keep non-empty non-placeholder values as valid.
+    return bool(_CREDIT_NUMBER_PATTERN.search(text) or text)
 
 
 def parse_status_events(status_text: Any) -> list[dict[str, Any]]:
@@ -403,6 +408,7 @@ def compute_ticket_timeline_metrics_from_status_list(
     threshold_days: int = 30,
     now_dt: datetime | None = None,
     has_credit_number: bool = False,
+    pending_only: bool = False,
 ) -> dict[str, Any]:
     if now_dt is None:
         now_dt = datetime.now()
@@ -413,14 +419,15 @@ def compute_ticket_timeline_metrics_from_status_list(
 
     all_events = sorted(all_events, key=lambda x: x["dt"])
 
-    entered = next((e for e in all_events if e["event_type"] == "entered"), None)
-    investigation = next((e for e in all_events if e["event_type"] == "investigation"), None)
-    submitted = next((e for e in all_events if e["event_type"] == "submitted_to_billing"), None)
-    credited = next((e for e in all_events if e["event_type"] == "credited"), None)
-    last_event = all_events[-1] if all_events else None
+    events_for_pending = [e for e in all_events if e["event_type"] != "credited"] if pending_only else all_events
+    entered = next((e for e in events_for_pending if e["event_type"] == "entered"), None)
+    investigation = next((e for e in events_for_pending if e["event_type"] == "investigation"), None)
+    submitted = next((e for e in events_for_pending if e["event_type"] == "submitted_to_billing"), None)
+    credited = None if pending_only else next((e for e in all_events if e["event_type"] == "credited"), None)
+    last_event = events_for_pending[-1] if events_for_pending else (all_events[-1] if all_events else None)
 
     credited_inferred_from_rtn = False
-    if credited is None and has_credit_number and last_event is not None:
+    if credited is None and has_credit_number and (not pending_only) and last_event is not None:
         credited = {
             "timestamp": last_event["timestamp"],
             "dt": last_event["dt"],
@@ -431,12 +438,12 @@ def compute_ticket_timeline_metrics_from_status_list(
 
     # Fallback: many status timelines do not explicitly include "open/not started".
     # Use earliest non-terminal status event as entry anchor when available.
-    if entered is None and all_events:
-        non_terminal_entered = next((e for e in all_events if e["event_type"] != "credited"), None)
+    if entered is None and events_for_pending:
+        non_terminal_entered = next((e for e in events_for_pending if e["event_type"] != "credited"), None)
         if non_terminal_entered is not None:
             entered = non_terminal_entered
         elif credited is None:
-            entered = all_events[0]
+            entered = events_for_pending[0]
 
     metrics: dict[str, Any] = {
         "timeline_events": [
@@ -445,7 +452,7 @@ def compute_ticket_timeline_metrics_from_status_list(
                 "event_type": event["event_type"],
                 "raw_text": event["raw_text"],
             }
-            for event in all_events
+            for event in events_for_pending
         ],
         "entered_timestamp": entered["timestamp"] if entered else None,
         "investigation_timestamp": investigation["timestamp"] if investigation else None,
@@ -454,8 +461,9 @@ def compute_ticket_timeline_metrics_from_status_list(
         "last_status_timestamp": last_event["timestamp"] if last_event else None,
         "last_status_event_type": last_event["event_type"] if last_event else None,
         "last_status_raw_text": last_event["raw_text"] if last_event else None,
-        "is_credited": credited is not None or has_credit_number,
+        "is_credited": (credited is not None or has_credit_number) and not pending_only,
         "credited_inferred_from_rtn": credited_inferred_from_rtn,
+        "pending_only": pending_only,
         "entered_to_credited_days": None,
         "investigation_to_credited_days": None,
         "days_open": None,
@@ -505,8 +513,9 @@ def analyze_ticket_actus(
         root for root in all_roots if root != primary_root and root.lower() != "unidentified"
     ]
 
+    lines = _iter_ticket_lines(ticket)
     line_credit_total = round(
-        sum(_safe_float(_line_get(line, "credit_request_total")) for line in _iter_ticket_lines(ticket)),
+        sum(_safe_float(_line_get(line, "credit_request_total")) for line in lines),
         2,
     )
     credit_totals = _ticket_get(ticket, "credit_request_totals", []) or []
@@ -530,16 +539,43 @@ def analyze_ticket_actus(
         for v in (_ticket_get(ticket, "item_numbers", []) or [])
         if str(v).strip()
     ]
-    line_count = len(_iter_ticket_lines(ticket))
+    line_count = len(lines)
+
+    credited_line_count = 0
+    credited_line_exposure = 0.0
+    for line in lines:
+        amount = _safe_float(_line_get(line, "credit_request_total"))
+        if _is_valid_credit_value(_line_get(line, "credit_number")):
+            credited_line_count += 1
+            credited_line_exposure += amount
+
+    # Fallback for pre-patch in-memory artifacts that don't carry line-level credit_number.
+    ticket_credit_numbers = _ticket_get(ticket, "credit_numbers", []) or []
+    if credited_line_count == 0 and line_count > 0:
+        inferred_credit_count = min(sum(1 for v in ticket_credit_numbers if _is_valid_credit_value(v)), line_count)
+        if inferred_credit_count > 0:
+            credited_line_count = inferred_credit_count
+            if line_count > 0:
+                credited_line_exposure = round(total_credit * (credited_line_count / line_count), 2)
+
+    pending_line_count = max(line_count - credited_line_count, 0)
+    pending_line_exposure = round(max(total_credit - credited_line_exposure, 0.0), 2)
+    credited_line_exposure = round(credited_line_exposure, 2)
+
+    is_partially_credited = credited_line_count > 0 and pending_line_count > 0
+    is_fully_credited = credited_line_count > 0 and pending_line_count == 0
 
     timeline = compute_ticket_timeline_metrics_from_status_list(
         _ticket_get(ticket, "status_raw_list", []) or [],
         threshold_days=threshold_days,
-        has_credit_number=_has_credit_number(_ticket_get(ticket, "credit_numbers", []) or []),
+        has_credit_number=is_fully_credited or _has_credit_number(ticket_credit_numbers),
+        pending_only=is_partially_credited,
     )
     entered_days = timeline.get("entered_to_credited_days")
     investigation_days = timeline.get("investigation_to_credited_days")
     is_credited = bool(timeline.get("is_credited"))
+    if is_partially_credited:
+        is_credited = False
     days_open = timeline.get("days_open")
     last_status_timestamp = timeline.get("last_status_timestamp")
     last_status_event_type = timeline.get("last_status_event_type")
@@ -568,6 +604,18 @@ def analyze_ticket_actus(
         parts.append(f"Primary root cause: {primary_root}.")
 
     parts.append(f"Total credited amount is ${total_credit:,.2f} across {line_count} invoice lines.")
+    if is_partially_credited:
+        parts.append(
+            f"Credit coverage is partially credited: {credited_line_count}/{line_count} lines have CR/RTN "
+            f"(${credited_line_exposure:,.2f}) and {pending_line_count} line(s) remain pending "
+            f"(${pending_line_exposure:,.2f})."
+        )
+    elif is_fully_credited:
+        parts.append(
+            f"Credit coverage is fully credited: {credited_line_count}/{line_count} lines have CR/RTN."
+        )
+    else:
+        parts.append("Credit coverage is open: no credited lines detected yet.")
 
     if is_credited:
         if isinstance(entered_days, (int, float)) and isinstance(investigation_days, (int, float)):
@@ -584,24 +632,25 @@ def analyze_ticket_actus(
                 f"{threshold_text} the {threshold_days}-day aging threshold."
             )
     else:
+        pending_prefix = "The pending portion is still open. " if is_partially_credited else "The ticket is still open. "
         if submitted_ts and isinstance(days_pending_billing, (int, float)):
             open_text = ""
             if isinstance(days_open, (int, float)):
                 open_text = f"It has been open for {days_open:.2f} days. "
             parts.append(
-                f"The ticket is still open. {open_text}"
+                f"{pending_prefix}{open_text}"
                 f"It has been in billing since {submitted_ts}, pending to be credited for "
                 f"{days_pending_billing:.2f} days."
             )
         elif last_status_timestamp and last_status_event_type:
             if isinstance(days_open, (int, float)):
                 parts.append(
-                    f"The ticket is still open and has been open for {days_open:.2f} days. "
+                    f"{pending_prefix}It has been open for {days_open:.2f} days. "
                     f"The last recorded status was {last_status_event_type} on {last_status_timestamp}."
                 )
             else:
                 parts.append(
-                    f"The ticket is still open. "
+                    f"{pending_prefix}"
                     f"The last recorded status was {last_status_event_type} on {last_status_timestamp}."
                 )
 
@@ -628,6 +677,11 @@ def analyze_ticket_actus(
         "days_pending_billing_to_credit": days_pending_billing,
         "threshold_exceeded": threshold_exceeded,
         "is_credited": is_credited,
+        "is_partially_credited": is_partially_credited,
+        "credited_line_count": credited_line_count,
+        "pending_line_count": pending_line_count,
+        "credited_line_exposure": credited_line_exposure,
+        "pending_line_exposure": pending_line_exposure,
         "last_status_timestamp": last_status_timestamp,
         "last_status_event_type": last_status_event_type,
         "invoice_numbers": invoice_numbers,

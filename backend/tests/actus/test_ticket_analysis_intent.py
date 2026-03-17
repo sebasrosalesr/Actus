@@ -132,6 +132,28 @@ class TestTicketAnalysisIntent(unittest.TestCase):
         self.assertTrue(all(len(str(h)) <= 180 for h in highlights))
         self.assertTrue(all("️⃣" not in str(h) for h in highlights))
 
+    def test_intent_ticket_analysis_adds_mixed_lines_suggestion_when_partial(self) -> None:
+        fake_analysis = {
+            "ticket_id": "R-062817",
+            "primary_root_cause": "price_loaded_after_invoice",
+            "supporting_root_causes": [],
+            "credit_total": 6278.40,
+            "line_count": 34,
+            "is_credited": False,
+            "is_partially_credited": True,
+            "answer": "Ticket R-062817 analysis summary.",
+        }
+        service = MagicMock()
+        service.analyze_ticket.return_value = fake_analysis
+
+        with patch("actus.intents.ticket_analysis.get_runtime_service", return_value=service):
+            _, _, meta = intent_ticket_analysis("analyze ticket R-062817", pd.DataFrame())
+
+        suggestions = meta.get("suggestions", [])
+        self.assertEqual(3, len(suggestions))
+        self.assertEqual("mixed_lines", suggestions[2]["id"])
+        self.assertEqual("mixed lines R-062817", suggestions[2]["prefix"])
+
 
 if __name__ == "__main__":
     unittest.main()

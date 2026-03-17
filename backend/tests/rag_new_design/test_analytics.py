@@ -134,6 +134,7 @@ class TestAnalytics(unittest.TestCase):
         self.assertIn("timeline_metrics", out)
         self.assertIn("answer", out)
         self.assertIn("Ticket R-800001", out["answer"])
+        self.assertFalse(out.get("is_partially_credited", False))
 
     def test_analyze_ticket_actus_not_found(self) -> None:
         out = analyze_ticket_actus("R-999999", {})
@@ -177,6 +178,55 @@ class TestAnalytics(unittest.TestCase):
         self.assertTrue(out["credited_inferred_from_rtn"])
         self.assertEqual("2026-03-01 10:00:00", out["credited_timestamp"])
         self.assertIsNone(out["days_open"])
+
+    def test_analyze_ticket_marks_partially_credited_for_mixed_lines(self) -> None:
+        credit_rows = [
+            {
+                "Ticket Number": "R-810001",
+                "Invoice Number": "INV810A",
+                "Item Number": "1008101",
+                "Reason for Credit": "pricing issue",
+                "Credit Request Total": "100.00",
+                "Customer Number": "ABC10",
+                "Sales Rep": "REP810",
+                "RTN_CR_No": "RTNINT0011111",
+                "Status": (
+                    "2026-02-01 08:00:00\nOpen: Not Started\n"
+                    "2026-02-02 09:00:00\nSubmitted to Billing\n"
+                    "2026-02-03 10:00:00\nUpdate: Credit number sent. Ticket is resolved and will be closed."
+                ),
+            },
+            {
+                "Ticket Number": "R-810001",
+                "Invoice Number": "INV810B",
+                "Item Number": "1008102",
+                "Reason for Credit": "pricing issue",
+                "Credit Request Total": "50.00",
+                "Customer Number": "ABC10",
+                "Sales Rep": "REP810",
+                "RTN_CR_No": "",
+                "Status": (
+                    "2026-02-01 08:00:00\nOpen: Not Started\n"
+                    "2026-02-02 09:00:00\nSubmitted to Billing\n"
+                    "2026-02-03 10:00:00\nUpdate: Credit number sent. Ticket is resolved and will be closed."
+                ),
+            },
+        ]
+        artifacts = build_pipeline_artifacts(
+            credit_rows=credit_rows,
+            investigation_rows=[],
+            rules=load_root_cause_rules(),
+        )
+
+        out = analyze_ticket_actus("R-810001", artifacts.canonical_tickets, threshold_days=30)
+        self.assertEqual("R-810001", out["ticket_id"])
+        self.assertTrue(out["is_partially_credited"])
+        self.assertFalse(out["is_credited"])
+        self.assertEqual(2, out["line_count"])
+        self.assertEqual(1, out["credited_line_count"])
+        self.assertEqual(1, out["pending_line_count"])
+        self.assertIn("partially credited", out["answer"].lower())
+        self.assertIn("pending portion", out["answer"].lower())
 
 
 if __name__ == "__main__":

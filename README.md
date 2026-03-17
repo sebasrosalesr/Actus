@@ -2,6 +2,8 @@
 
 Monorepo with a React frontend and a Python FastAPI backend for the Actus agent orchestration system.
 
+For the current architecture and runtime behavior, see `README_V2.md`.
+
 ## Structure
 
 - `backend/` Python service (FastAPI + Actus intent router)

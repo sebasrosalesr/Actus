@@ -97,6 +97,32 @@ INTENT_DEFS = [
     {"id": "credit_amount_plot", "label": "Credit amount chart", "prefix": "credit amount chart", "func": intent_credit_amount_plot, "aliases": CREDIT_AMOUNT_PLOT_ALIASES},
     {"id": "investigation_notes", "label": "Investigation notes", "prefix": "investigation notes", "func": intent_investigation_notes, "aliases": INVESTIGATION_NOTES_ALIASES},
 ]
+INTENT_ID_BY_FUNC = {item["func"]: item["id"] for item in INTENT_DEFS}
+
+
+def _meta_with_intent(meta: Optional[Dict[str, object]], intent_id: str, matched_by: str | None = None) -> Dict[str, object]:
+    payload = dict(meta) if isinstance(meta, dict) else {}
+    payload["intent_id"] = intent_id
+    payload.setdefault("intent", intent_id)
+    if matched_by:
+        payload["intent_matched_by"] = matched_by
+    return payload
+
+
+def _return_with_intent(
+    result: object,
+    *,
+    intent_id: str,
+    matched_by: str | None = None,
+) -> Tuple[str, Optional[pd.DataFrame], Dict[str, object]]:
+    if isinstance(result, str):
+        return (result, None, _meta_with_intent({}, intent_id, matched_by))
+    if isinstance(result, tuple) and len(result) == 2:
+        return (result[0], result[1], _meta_with_intent({}, intent_id, matched_by))
+    if isinstance(result, tuple) and len(result) == 3:
+        return (result[0], result[1], _meta_with_intent(result[2], intent_id, matched_by))
+    # Defensive fallback for non-standard intent outputs.
+    return (str(result), None, _meta_with_intent({}, intent_id, matched_by))
 
 
 def _normalize_query(query: str) -> str:
@@ -263,18 +289,17 @@ def actus_answer(query: str, df: pd.DataFrame) -> Tuple[str, Optional[pd.DataFra
 
     q_low = query.lower()
     if _is_help_query(q_low):
-        return (HELP_TEXT, None, {"is_help": True})
+        return (HELP_TEXT, None, {"is_help": True, "intent_id": "help", "intent": "help"})
 
     normalized = _normalize_query(q_low)
     if any(term in normalized for term in ["plot", "chart", "graph"]):
         plot_result = intent_credit_amount_plot(query, df)
         if plot_result is not None:
-            if isinstance(plot_result, str):
-                return (plot_result, None, {})
-            if isinstance(plot_result, tuple) and len(plot_result) == 2:
-                return (plot_result[0], plot_result[1], {})
-            if isinstance(plot_result, tuple) and len(plot_result) == 3:
-                return plot_result
+            return _return_with_intent(
+                plot_result,
+                intent_id="credit_amount_plot",
+                matched_by="plot_keyword",
+            )
 
     if any(phrase in normalized for phrase in ["what day is today", "what day is it", "what is today", "today's date", "todays date"]):
         today = datetime.now().strftime("%A, %B %d, %Y")
@@ -286,36 +311,38 @@ def actus_answer(query: str, df: pd.DataFrame) -> Tuple[str, Optional[pd.DataFra
     ):
         result = intent_credit_activity(query, df)
         if isinstance(result, tuple) and len(result) in {2, 3}:
-            if len(result) == 2:
-                return (result[0], result[1], {})
-            return result
+            return _return_with_intent(
+                result,
+                intent_id="credit_activity",
+                matched_by="keyword_rule",
+            )
 
     if "investigation" in q_low and "note" in q_low:
         result = intent_investigation_notes(query, df)
         if isinstance(result, tuple) and len(result) in {2, 3}:
-            if len(result) == 2:
-                return (result[0], result[1], {})
-            return result
+            return _return_with_intent(
+                result,
+                intent_id="investigation_notes",
+                matched_by="keyword_rule",
+            )
 
     alias_match = _match_intent_alias(query)
     if alias_match:
         result = alias_match["func"](query, df)
-        if isinstance(result, str):
-            return (result, None, {})
-        if isinstance(result, tuple) and len(result) == 2:
-            return (result[0], result[1], {})
-        if isinstance(result, tuple) and len(result) == 3:
-            return result
+        return _return_with_intent(
+            result,
+            intent_id=alias_match["id"],
+            matched_by="alias",
+        )
 
     classifier_match = _classify_intent_openrouter(query)
     if classifier_match:
         result = classifier_match["func"](query, df)
-        if isinstance(result, str):
-            return (result, None, {})
-        if isinstance(result, tuple) and len(result) == 2:
-            return (result[0], result[1], {})
-        if isinstance(result, tuple) and len(result) == 3:
-            return result
+        return _return_with_intent(
+            result,
+            intent_id=classifier_match["id"],
+            matched_by="classifier",
+        )
 
     for intent in INTENTS:
         result = intent(query, df)
@@ -323,17 +350,14 @@ def actus_answer(query: str, df: pd.DataFrame) -> Tuple[str, Optional[pd.DataFra
         if result is None:
             continue
 
-        # Intent returned only a string
-        if isinstance(result, str):
-            return (result, None, {})
-
-        # Intent returned (text, df)
-        if isinstance(result, tuple) and len(result) == 2:
-            return (result[0], result[1], {})
-
-        # Intent returned (text, df, meta)
-        if isinstance(result, tuple) and len(result) == 3:
-            return result
+        intent_id = INTENT_ID_BY_FUNC.get(intent)
+        if not intent_id:
+            intent_id = intent.__name__.removeprefix("intent_")
+        return _return_with_intent(
+            result,
+            intent_id=intent_id,
+            matched_by="scan",
+        )
 
     suggestions = _suggest_intents_openrouter(query)
     if suggestions:
@@ -341,6 +365,10 @@ def actus_answer(query: str, df: pd.DataFrame) -> Tuple[str, Optional[pd.DataFra
         for idx, item in enumerate(suggestions, start=1):
             lines.append(f"{idx}. {item['label']}")
         lines.append("Reply with 1, 2, or 3.")
-        return ("\n".join(lines), None, {"suggestions": suggestions})
+        return (
+            "\n".join(lines),
+            None,
+            {"suggestions": suggestions, "intent_id": "suggestions", "intent": "suggestions"},
+        )
 
-    return (HELP_TEXT, None, {})
+    return (HELP_TEXT, None, {"intent_id": "help", "intent": "help"})

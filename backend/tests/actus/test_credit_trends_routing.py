@@ -28,12 +28,14 @@ class TestCreditTrendsRouting(unittest.TestCase):
         self.assertIsNone(rows)
         self.assertIn("Credit Trends Analysis", text)
         self.assertIn("creditTrends", meta)
+        self.assertEqual("credit_trends", meta.get("intent_id"))
         self.assertNotIn("follow_up", meta)
 
     def test_plot_query_still_routes_to_plot_intent(self) -> None:
         text, rows, meta = actus_answer("plot credit trends", _trend_df())
         self.assertIsNone(rows)
         self.assertIn("What date range should I use", text)
+        self.assertEqual("credit_amount_plot", meta.get("intent_id"))
         self.assertIn("follow_up", meta)
         self.assertEqual("credit_amount_plot", meta["follow_up"]["intent"])
 

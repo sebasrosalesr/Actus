@@ -466,6 +466,7 @@ def compute_ticket_timeline_metrics_from_status_list(
         "pending_only": pending_only,
         "entered_to_credited_days": None,
         "investigation_to_credited_days": None,
+        "submitted_to_credited_days": None,
         "days_open": None,
         "days_pending_billing_to_credit": None,
         "entered_to_credited_over_30_days": False,
@@ -481,6 +482,10 @@ def compute_ticket_timeline_metrics_from_status_list(
         days = (credited["dt"] - investigation["dt"]).total_seconds() / 86400.0
         metrics["investigation_to_credited_days"] = round(days, 2)
         metrics["investigation_to_credited_over_30_days"] = days > threshold_days
+
+    if submitted and credited:
+        days = (credited["dt"] - submitted["dt"]).total_seconds() / 86400.0
+        metrics["submitted_to_credited_days"] = round(days, 2)
 
     if entered and not metrics["is_credited"]:
         metrics["days_open"] = round((now_dt - entered["dt"]).total_seconds() / 86400.0, 2)
@@ -573,6 +578,7 @@ def analyze_ticket_actus(
     )
     entered_days = timeline.get("entered_to_credited_days")
     investigation_days = timeline.get("investigation_to_credited_days")
+    submitted_to_credited_days = timeline.get("submitted_to_credited_days")
     is_credited = bool(timeline.get("is_credited"))
     if is_partially_credited:
         is_credited = False
@@ -673,6 +679,7 @@ def analyze_ticket_actus(
         "line_count": line_count,
         "entered_to_credited_days": entered_days,
         "investigation_to_credited_days": investigation_days,
+        "submitted_to_credited_days": submitted_to_credited_days,
         "days_open": days_open,
         "days_pending_billing_to_credit": days_pending_billing,
         "threshold_exceeded": threshold_exceeded,

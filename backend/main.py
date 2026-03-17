@@ -84,9 +84,12 @@ ensure_openmp_env()
 
 from app.api.rag import router as rag_router
 from app.api.help import router as help_router
+from app.api.quality import router as quality_router
+from app.quality.store import init_quality_db, record_quality_event, resolve_db_path
 from app.rag.new_design.service import get_runtime_service
 APP.include_router(rag_router)
 APP.include_router(help_router)
+APP.include_router(quality_router)
 
 DATA_TTL_SEC = 120
 _CACHE: Dict[str, Any] = {"df": None, "loaded_at": 0.0}
@@ -95,6 +98,113 @@ _RAG_REBUILD_STOP = threading.Event()
 
 class AskRequest(BaseModel):
     query: str
+
+
+def _release_tag() -> str:
+    value = os.environ.get("ACTUS_RELEASE_TAG", "").strip()
+    return value or "dev"
+
+
+def _infer_intent_id(query: str, meta: Dict[str, Any] | None) -> str | None:
+    if isinstance(meta, dict):
+        direct = meta.get("intent") or meta.get("intent_id")
+        if isinstance(direct, str) and direct.strip():
+            return direct.strip()
+        follow_up = meta.get("follow_up")
+        if isinstance(follow_up, dict):
+            value = follow_up.get("intent")
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+        if isinstance(meta.get("ticket_analysis"), dict):
+            return "ticket_analysis"
+        if isinstance(meta.get("item_analysis"), dict):
+            return "item_analysis"
+        for key in ("creditTrends", "creditAnomalies", "creditOpsSnapshot"):
+            if key in meta:
+                return key
+
+    normalized = query.strip().lower()
+    if normalized.startswith("analyze ticket"):
+        return "ticket_analysis"
+    if normalized.startswith("analyze item"):
+        return "item_analysis"
+    return None
+
+
+def _safe_log_quality_event(
+    *,
+    query: str,
+    rows: list[dict[str, Any]],
+    meta: Dict[str, Any] | None,
+    ok: bool,
+    elapsed_ms: float,
+    provider: str,
+    error: str | None = None,
+) -> None:
+    payload = meta if isinstance(meta, dict) else {}
+    ticket_analysis = payload.get("ticket_analysis")
+    highlight_source = None
+    highlight_model = None
+    if isinstance(ticket_analysis, dict):
+        highlight_source = ticket_analysis.get("investigation_highlights_source")
+        highlight_model = ticket_analysis.get("investigation_highlights_model")
+
+    compact_meta = {
+        "keys": sorted(list(payload.keys()))[:40],
+        "suggestion_count": len(payload.get("suggestions", []))
+        if isinstance(payload.get("suggestions"), list)
+        else 0,
+    }
+    try:
+        record_quality_event(
+            {
+                "query": query,
+                "intent_id": _infer_intent_id(query, payload),
+                "provider": provider,
+                "latency_ms": elapsed_ms,
+                "ok": ok,
+                "error": error,
+                "result_count": len(rows),
+                "has_ticket_analysis": isinstance(payload.get("ticket_analysis"), dict),
+                "has_item_analysis": isinstance(payload.get("item_analysis"), dict),
+                "highlight_source": highlight_source,
+                "highlight_model": highlight_model,
+                "is_help": bool(payload.get("is_help", False)),
+                "release_tag": _release_tag(),
+                "meta": compact_meta,
+            }
+        )
+    except Exception as exc:
+        print(f"[quality] log failed: {exc}")
+
+
+def _ask_response(
+    *,
+    query: str,
+    text: str,
+    rows: list[dict[str, Any]] | None,
+    meta: Dict[str, Any] | None,
+    t0: float,
+    ok: bool = True,
+    provider: str = "actus",
+    error: str | None = None,
+) -> Dict[str, Any]:
+    row_list = rows or []
+    meta_obj = meta or {}
+    elapsed_ms = (time.perf_counter() - t0) * 1000
+    _safe_log_quality_event(
+        query=query,
+        rows=row_list,
+        meta=meta_obj,
+        ok=ok,
+        elapsed_ms=elapsed_ms,
+        provider=provider,
+        error=error,
+    )
+    payload: Dict[str, Any] = {"text": text, "rows": row_list, "meta": meta_obj}
+    if error:
+        payload["error"] = error
+    return payload
 
 
 def _openrouter_call(query: str) -> str:
@@ -306,6 +416,11 @@ def user_context(email: str | None = None) -> Dict[str, Any]:
 
 @APP.on_event("startup")
 def _startup() -> None:
+    try:
+        init_quality_db()
+        print(f"[quality] db ready at {resolve_db_path()}")
+    except Exception as exc:
+        print(f"[quality] db init failed: {exc}")
     _preload_new_rag_service()
     _start_rag_rebuild_loop()
 
@@ -326,11 +441,14 @@ def ask(payload: AskRequest) -> Dict[str, Any]:
     if llm_mode == "always":
         try:
             text = _openrouter_call(query)
-            return {
-                "text": text,
-                "rows": [],
-                "meta": {"provider": "openrouter"},
-            }
+            return _ask_response(
+                query=query,
+                text=text,
+                rows=[],
+                meta={"provider": "openrouter"},
+                t0=t0,
+                provider="openrouter",
+            )
         except Exception as exc:
             print(f"[openrouter] failed, falling back to actus: {exc}")
 
@@ -338,14 +456,19 @@ def ask(payload: AskRequest) -> Dict[str, Any]:
     try:
         df = _get_df()
     except Exception as exc:
-        return {
-            "text": (
+        return _ask_response(
+            query=query,
+            text=(
                 "Actus backend is not configured with Firebase credentials yet. "
                 "Set ACTUS_FIREBASE_JSON or ACTUS_FIREBASE_PATH."
             ),
-            "rows": [],
-            "error": str(exc),
-        }
+            rows=[],
+            meta={},
+            t0=t0,
+            ok=False,
+            provider="actus",
+            error=str(exc),
+        )
     text, df_result, meta = actus_answer(query, df)
     t2 = time.perf_counter()
     rows: list[dict[str, Any]] = []
@@ -369,11 +492,14 @@ def ask(payload: AskRequest) -> Dict[str, Any]:
     if llm_mode == "fallback" and text.startswith("Right now I can help you with:") and not meta.get("is_help"):
         try:
             llm_text = _openrouter_call(query)
-            return {
-                "text": llm_text,
-                "rows": [],
-                "meta": {"provider": "openrouter"},
-            }
+            return _ask_response(
+                query=query,
+                text=llm_text,
+                rows=[],
+                meta={"provider": "openrouter"},
+                t0=t0,
+                provider="openrouter",
+            )
         except Exception as exc:
             print(f"[openrouter] fallback failed: {exc}")
 
@@ -386,4 +512,11 @@ def ask(payload: AskRequest) -> Dict[str, Any]:
             (t3 - t2) * 1000,
         )
     )
-    return {"text": text, "rows": rows, "meta": meta}
+    return _ask_response(
+        query=query,
+        text=text,
+        rows=rows,
+        meta=meta,
+        t0=t0,
+        provider=str(meta.get("provider", "actus")) if isinstance(meta, dict) else "actus",
+    )

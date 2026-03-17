@@ -6,6 +6,7 @@ import Mockup from './Mockup';
 import RootCauses, { type RootCauseItem } from './RootCauses';
 import { RagResults } from './RagResults';
 import { Analysis, ItemAnalysis, type TicketAnalysisMeta, type ItemAnalysisMeta } from './Analysis';
+import { AnomalyScan } from './AnomalyScan';
 
 type ActusChatProps = {
     userEmail?: string;
@@ -69,6 +70,8 @@ export default function ActusChat({ userEmail, onLogout }: ActusChatProps) {
         rows?: Record<string, unknown>[];
         creditTrends?: CreditTrendsData; // New field for trends dashboard
         meta?: {
+            intent_id?: string;
+            intent?: string;
             follow_up?: {
                 intent?: string;
                 prefix?: string;
@@ -80,6 +83,7 @@ export default function ActusChat({ userEmail, onLogout }: ActusChatProps) {
                 confidence?: number;
             }>;
             show_table?: boolean;
+            anomaly_scan?: boolean;
             csv_filename?: string;
             csv_rows?: Record<string, unknown>[];
             csv_row_count?: number;
@@ -691,6 +695,20 @@ export default function ActusChat({ userEmail, onLogout }: ActusChatProps) {
                 rows: Array.isArray(data.rows) ? data.rows : undefined,
                 meta: data.meta,
             };
+            const resolvedIntentId = String(data.meta?.intent_id || data.meta?.intent || '').trim().toLowerCase();
+            const hasAnomalyColumns =
+                Array.isArray(data.meta?.columns)
+                && data.meta.columns.some((col) => {
+                    const normalized = String(col || '').trim().toLowerCase();
+                    return normalized === 'anomaly flag' || normalized === 'z score' || normalized === 'anomaly_reason';
+                });
+            if (resolvedIntentId === 'credit_anomalies' || hasAnomalyColumns) {
+                assistantMessage.meta = {
+                    ...(assistantMessage.meta || {}),
+                    anomaly_scan: true,
+                    show_table: false,
+                };
+            }
             if (data.meta?.follow_up?.intent && data.meta?.follow_up?.prefix) {
                 setPendingFollowup({
                     intent: String(data.meta.follow_up.intent),
@@ -1033,6 +1051,11 @@ export default function ActusChat({ userEmail, onLogout }: ActusChatProps) {
                             const noteSplit = splitInvestigationNote(noteContent);
                             const shouldCollapseNote = Boolean(noteSummary && noteSplit.hasCollapse);
                             const noteDisplayContent = shouldCollapseNote && !isNoteExpanded ? noteSplit.collapsed : noteSplit.full;
+                            const isAnomalyMessage = Boolean(
+                                message.meta?.anomaly_scan
+                                || message.meta?.intent_id === 'credit_anomalies'
+                                || message.meta?.intent === 'credit_anomalies'
+                            );
 
                             return (
                                 <div
@@ -1082,7 +1105,7 @@ export default function ActusChat({ userEmail, onLogout }: ActusChatProps) {
                                     )}
 
                                     {/* TEXT CONTENT */}
-                                    {!(message.role === 'assistant' && (message.creditTrends || message.meta?.rootCauses)) && Boolean(message.content?.trim()) && (
+                                    {!(message.role === 'assistant' && (message.creditTrends || message.meta?.rootCauses || isAnomalyMessage)) && Boolean(message.content?.trim()) && (
                                         <div
                                             className={`p-5 rounded-3xl backdrop-blur-md transition-all duration-300 shadow-xl ${message.role === 'user'
                                                 ? 'bg-indigo-900/20 text-indigo-50 shadow-indigo-900/20 rounded-tr-sm border border-indigo-500/20'
@@ -1256,6 +1279,19 @@ export default function ActusChat({ userEmail, onLogout }: ActusChatProps) {
                                             data={message.meta.item_analysis}
                                             suggestions={message.meta.suggestions}
                                             onSuggestionClick={(query) => sendMessage(query, { showUser: true, bypassPending: true })}
+                                        />
+                                    )}
+
+                                    {/* ANOMALY SCAN CARD */}
+                                    {message.role === 'assistant' && isAnomalyMessage && (
+                                        <AnomalyScan
+                                            rows={Array.isArray(message.rows) ? message.rows : []}
+                                            csvRows={Array.isArray(message.meta?.csv_rows) ? message.meta.csv_rows : []}
+                                            onReviewTicket={(ticketId) => {
+                                                const ticket = String(ticketId || '').trim();
+                                                if (!ticket) return;
+                                                void sendMessage(`ticket status ${ticket}`, { showUser: true, bypassPending: true });
+                                            }}
                                         />
                                     )}
 

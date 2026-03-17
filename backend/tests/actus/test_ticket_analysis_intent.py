@@ -74,6 +74,7 @@ class TestTicketAnalysisIntent(unittest.TestCase):
         self.assertIsNone(rows)
         self.assertIn("analysis generated", text.lower())
         self.assertIn("ticket_analysis", meta)
+        self.assertEqual("ticket_analysis", meta.get("intent_id"))
         self.assertEqual("R-058284", meta["ticket_analysis"]["ticket_id"])
         self.assertIn("suggestions", meta)
         service.analyze_ticket.assert_called_once()

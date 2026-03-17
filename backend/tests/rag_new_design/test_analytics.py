@@ -131,6 +131,8 @@ class TestAnalytics(unittest.TestCase):
         self.assertTrue(out["is_credited"])
         self.assertIsNotNone(out["entered_to_credited_days"])
         self.assertIsNotNone(out["investigation_to_credited_days"])
+        self.assertIsNotNone(out["submitted_to_credited_days"])
+        self.assertAlmostEqual(2.88, float(out["submitted_to_credited_days"]), places=2)
         self.assertIn("timeline_metrics", out)
         self.assertIn("answer", out)
         self.assertIn("Ticket R-800001", out["answer"])
@@ -178,6 +180,19 @@ class TestAnalytics(unittest.TestCase):
         self.assertTrue(out["credited_inferred_from_rtn"])
         self.assertEqual("2026-03-01 10:00:00", out["credited_timestamp"])
         self.assertIsNone(out["days_open"])
+
+    def test_timeline_computes_submitted_to_credited_days(self) -> None:
+        status_list = [
+            (
+                "2026-02-04 11:07:52\nWIP: 1st in queue.\n"
+                "2026-02-04 11:23:48\n[DW] On macro. Went through investigation.\n"
+                "2026-02-13 12:39:36\n[DW] Submitted to Billing: February 13th, 2026\n"
+                "2026-03-02 12:21:10\n[SYSTEM] Updated by the system."
+            )
+        ]
+        out = compute_ticket_timeline_metrics_from_status_list(status_list)
+        self.assertTrue(out["is_credited"])
+        self.assertAlmostEqual(16.99, float(out["submitted_to_credited_days"]), places=2)
 
     def test_analyze_ticket_marks_partially_credited_for_mixed_lines(self) -> None:
         credit_rows = [

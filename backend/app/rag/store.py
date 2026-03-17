@@ -2,17 +2,13 @@ from __future__ import annotations
 
 import json
 import os
-import sqlite3
 from pathlib import Path
-from typing import Any, Iterable, Optional
+from typing import Any, Iterable
 
-try:
-    import faiss  # type: ignore
-except Exception:  # pragma: no cover - optional dependency for local FAISS
-    faiss = None  # type: ignore
 import numpy as np
 
 from app.rag.embeddings import embed_texts
+
 
 def _safe_json_loads(value: Any) -> dict[str, Any]:
     if not value:
@@ -23,297 +19,6 @@ def _safe_json_loads(value: Any) -> dict[str, Any]:
         return json.loads(value)
     except Exception:
         return {}
-
-
-def _row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
-    """
-    Normalize SQLite row into the same chunk shape used everywhere:
-      { id, text, chunk_type, metadata }
-    Tolerant to missing columns.
-    """
-    d = dict(row)
-    metadata = _safe_json_loads(d.get("metadata_json") or d.get("metadata") or {})
-    text = d.get("text") or d.get("content") or d.get("chunk") or ""
-    chunk_type = (
-        d.get("chunk_type")
-        or metadata.get("chunk_type")
-        or metadata.get("event_type")
-        or "event"
-    )
-    ticket_id = d.get("ticket_id") or metadata.get("ticket_id") or metadata.get("TicketId")
-
-    if ticket_id and isinstance(metadata, dict):
-        metadata.setdefault("ticket_id", ticket_id)
-
-    chunk_id = d.get("chunk_id")
-    if chunk_id is None:
-        chunk_id = d.get("id")
-
-    return {
-        "id": d.get("id"),
-        "chunk_id": chunk_id,
-        "ticket_id": ticket_id,
-        "text": text,
-        "chunk_type": chunk_type,
-        "metadata": metadata,
-    }
-
-
-def _table_has_column(conn: sqlite3.Connection, table: str, col: str) -> bool:
-    try:
-        rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
-        cols = {r[1] for r in rows}
-        return col in cols
-    except Exception:
-        return False
-
-
-def _pick_id_expr(conn: sqlite3.Connection, table: str) -> str:
-    if _table_has_column(conn, table, "id"):
-        return "id"
-    if _table_has_column(conn, table, "chunk_id"):
-        return "chunk_id AS id"
-    return "rowid AS id"
-
-
-class RagStore:
-    """
-    Local FAISS + SQLite store for RAG chunks.
-
-    - FAISS: IndexFlatIP wrapped by IndexIDMap2 (cosine similarity via L2 norm)
-    - SQLite: chunk metadata + text
-    """
-
-    def __init__(self, data_dir: str | Path | None = None, embedding_dim: int | None = None) -> None:
-        base_dir = Path(data_dir) if data_dir else Path(__file__).resolve().parents[2] / "rag_data"
-        self.data_dir = base_dir
-        self.data_dir.mkdir(parents=True, exist_ok=True)
-
-        self.index_path = self.data_dir / "index.faiss"
-        self.sqlite_path = self.data_dir / "chunks.sqlite"
-        self.embedding_dim = embedding_dim
-
-        self._conn: sqlite3.Connection | None = None
-        self._open()
-        self._ensure_schema()
-
-        if faiss is None:
-            raise RuntimeError("faiss is not installed. Install faiss-cpu to use the local RAG store.")
-        self.index = self._load_or_create_index()
-
-    def _ensure_schema(self) -> None:
-        self._ensure_open()
-        self._conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS chunks (
-                chunk_id INTEGER PRIMARY KEY,
-                ticket_id TEXT,
-                chunk_type TEXT,
-                text TEXT,
-                metadata_json TEXT
-            )
-            """
-        )
-        self._conn.commit()
-
-    def _chunks_table(self) -> str:
-        return "chunks"
-
-    def _open(self) -> None:
-        if self._conn is None:
-            self._conn = sqlite3.connect(self.sqlite_path)
-            self._conn.row_factory = sqlite3.Row
-
-    def _ensure_open(self) -> None:
-        if self._conn is None:
-            self._open()
-        try:
-            self._conn.execute("SELECT 1")
-        except sqlite3.ProgrammingError:
-            self._conn = None
-            self._open()
-
-    def _load_or_create_index(self) -> Any:
-        if self.index_path.exists():
-            index = faiss.read_index(str(self.index_path))
-            if not isinstance(index, faiss.IndexIDMap2):
-                index = faiss.IndexIDMap2(index)
-            self.embedding_dim = index.d
-            return index
-
-        if self.embedding_dim is None:
-            self.embedding_dim = 1
-            base = faiss.IndexFlatIP(self.embedding_dim)
-            return faiss.IndexIDMap2(base)
-
-        base = faiss.IndexFlatIP(self.embedding_dim)
-        return faiss.IndexIDMap2(base)
-
-    @staticmethod
-    def _normalize_embeddings(embeddings: np.ndarray) -> np.ndarray:
-        norms = np.linalg.norm(embeddings, axis=1, keepdims=True)
-        norms[norms == 0] = 1.0
-        return embeddings / norms
-
-    def _persist_index(self) -> None:
-        faiss.write_index(self.index, str(self.index_path))
-
-    def upsert_chunks(self, chunks: list[dict], embeddings: np.ndarray) -> None:
-        if not chunks:
-            return
-
-        if embeddings.ndim != 2:
-            raise ValueError("Embeddings must be a 2D array.")
-
-        if len(chunks) != embeddings.shape[0]:
-            raise ValueError("Number of embeddings must match number of chunks.")
-
-        embeddings = embeddings.astype("float32", copy=False)
-        embeddings = self._normalize_embeddings(embeddings)
-
-        ids = np.array([int(chunk["chunk_id"]) for chunk in chunks], dtype="int64")
-        self.embedding_dim = int(embeddings.shape[1])
-        base = faiss.IndexFlatIP(self.embedding_dim)
-        self.index = faiss.IndexIDMap2(base)
-        self.index.add_with_ids(embeddings, ids)
-        self._persist_index()
-
-        rows = [
-            (
-                int(chunk["chunk_id"]),
-                chunk.get("ticket_id"),
-                chunk.get("chunk_type"),
-                chunk.get("text"),
-                json.dumps(chunk.get("metadata") or {}),
-            )
-            for chunk in chunks
-        ]
-
-        self._conn.executemany(
-            """
-            INSERT OR REPLACE INTO chunks (chunk_id, ticket_id, chunk_type, text, metadata_json)
-            VALUES (?, ?, ?, ?, ?)
-            """,
-            rows,
-        )
-        self._conn.commit()
-
-    def search(self, query_embedding: np.ndarray, top_k: int = 10) -> list[tuple[int, float]]:
-        if self.index.ntotal == 0:
-            return []
-
-        if query_embedding.ndim == 1:
-            query_embedding = query_embedding[None, :]
-
-        query_embedding = query_embedding.astype("float32", copy=False)
-        query_embedding = self._normalize_embeddings(query_embedding)
-
-        scores, ids = self.index.search(query_embedding, top_k)
-        results: list[tuple[int, float]] = []
-        for chunk_id, score in zip(ids[0].tolist(), scores[0].tolist()):
-            if chunk_id == -1:
-                continue
-            results.append((int(chunk_id), float(score)))
-        return results
-
-    def fetch_chunks(self, chunk_ids: Iterable[int]) -> list[dict]:
-        self._ensure_open()
-        chunk_ids = [int(cid) for cid in chunk_ids]
-        if not chunk_ids:
-            return []
-
-        placeholders = ", ".join(["?"] * len(chunk_ids))
-        rows = self._conn.execute(
-            f"""
-            SELECT chunk_id, ticket_id, chunk_type, text, metadata_json
-            FROM chunks
-            WHERE chunk_id IN ({placeholders})
-            """,
-            chunk_ids,
-        ).fetchall()
-
-        by_id: dict[int, dict] = {}
-        for row in rows:
-            record = _row_to_dict(row)
-            cid = record.get("chunk_id")
-            if cid is None:
-                continue
-            by_id[int(cid)] = record
-
-        return [by_id[cid] for cid in chunk_ids if cid in by_id]
-
-    def get_ticket_chunks(self, ticket_id: str) -> list[dict[str, Any]]:
-        """
-        Return all chunks for a specific ticket_id, using your SQLite schema.
-        This is safe across schemas that may not have an 'id' column.
-        Requires your table to have a 'ticket_id' column (you said it does).
-        """
-        self._ensure_open()
-        ticket_key = (ticket_id or "").strip().upper()
-        if not ticket_key:
-            return []
-
-        table = "chunks"
-        id_expr = _pick_id_expr(self._conn, table)
-        has_chunk_id = _table_has_column(self._conn, table, "chunk_id")
-        chunk_id_select = ", chunk_id" if has_chunk_id else ""
-
-        sql = f"""
-        SELECT
-          {id_expr},
-          ticket_id,
-          text,
-          chunk_type,
-          metadata_json
-          {chunk_id_select}
-        FROM {table}
-        WHERE UPPER(ticket_id) = ?
-        ORDER BY 1 ASC
-        """
-        rows = self._conn.execute(sql, (ticket_key,)).fetchall() or []
-        return [_row_to_dict(r) for r in rows]
-
-    def get_ticket_line_texts(self, ticket_id: str) -> list[str]:
-        """
-        Optional fallback: pull raw line-level texts for a ticket from a separate table.
-        Change table/column names to match your schema.
-        """
-        self._ensure_open()
-
-        table = "ticket_lines"
-        col_ticket = "ticket_id"
-        col_text = "text"
-
-        try:
-            rows = self._conn.execute(
-                f"SELECT {col_text} AS text FROM {table} WHERE {col_ticket} = ?",
-                (ticket_id,),
-            ).fetchall()
-            return [str(r["text"] or "") for r in rows]
-        except sqlite3.OperationalError:
-            return []
-
-    def has_data(self) -> bool:
-        return self.index_path.exists() and self.index.ntotal > 0
-
-    def reset(self) -> None:
-        # Local store rebuilds overwrite data via upsert; keep this as a no-op.
-        return None
-
-    def provider_name(self) -> str:
-        return "faiss"
-
-    def stats(self) -> dict[str, Any]:
-        return {
-            "vector_count": int(self.index.ntotal),
-            "index_path": str(self.index_path),
-            "sqlite_path": str(self.sqlite_path),
-        }
-
-    def close(self) -> None:
-        if self._conn is not None:
-            self._conn.close()
-            self._conn = None
 
 
 class PineconeRagStore:
@@ -522,8 +227,6 @@ class PineconeRagStore:
         if matches is None and isinstance(response, dict):
             matches = response.get("matches")
 
-        # Fallback: some ANN+filter executions can miss sparse ID-style queries.
-        # Pull a wider unfiltered candidate set, then filter by ticket_id client-side.
         if not matches:
             fallback_top_k = int(os.environ.get("ACTUS_PINECONE_TICKET_FALLBACK_TOP_K", "1000"))
             fallback = self.index.query(
@@ -578,12 +281,15 @@ class PineconeRagStore:
 def get_rag_store(
     data_dir: str | Path | None = None,
     embedding_dim: int | None = None,
-) -> RagStore | PineconeRagStore:
+) -> PineconeRagStore:
+    _ = data_dir  # kept for backward-compatible signature
     provider = (
         os.environ.get("ACTUS_RAG_PROVIDER")
         or os.environ.get("ACTUS_RAG_BACKEND")
-        or "faiss"
+        or "pinecone"
     ).strip().lower()
-    if provider == "pinecone":
-        return PineconeRagStore(embedding_dim=embedding_dim)
-    return RagStore(data_dir=data_dir, embedding_dim=embedding_dim)
+    if provider and provider != "pinecone":
+        raise RuntimeError(
+            "Legacy local RAG store was removed. Set ACTUS_RAG_PROVIDER=pinecone."
+        )
+    return PineconeRagStore(embedding_dim=embedding_dim)

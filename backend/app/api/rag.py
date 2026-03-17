@@ -779,14 +779,6 @@ def rag_health() -> dict[str, Any]:
             pass
 
 
-@router.post("/rag/search")
-def rag_search() -> dict[str, Any]:
-    raise HTTPException(
-        status_code=410,
-        detail="Legacy /rag/search was removed. Use /rag/new/search.",
-    )
-
-
 @router.get("/rag/ticket/{ticket_id}/refs", response_model=TicketRefsResponse)
 def rag_ticket_refs(ticket_id: str):
     store = get_rag_store()

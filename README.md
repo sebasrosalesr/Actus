@@ -123,7 +123,11 @@ flyctl machines run \
 ```
 
 `scripts/build_rag_index.py` now runs the `new_design` pipeline only (legacy pipeline removed).
+Use:
 
+```bash
+python backend/scripts/build_rag_index.py
+```
 If your app is not in the backend root, add `--workdir /app/backend` (or your deploy path).
 
 ## Next action rules

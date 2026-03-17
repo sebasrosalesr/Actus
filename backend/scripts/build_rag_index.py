@@ -43,19 +43,9 @@ def main_new_design() -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Build RAG index (new_design pipeline only).",
+        description="Build RAG index (new_design pipeline).",
     )
-    parser.add_argument(
-        "--pipeline",
-        default="new_design",
-        help="Deprecated. Only `new_design` is supported.",
-    )
-    args = parser.parse_args()
-
-    if str(args.pipeline).strip().lower() != "new_design":
-        raise SystemExit(
-            "Legacy RAG pipeline was removed. Use: python scripts/build_rag_index.py --pipeline new_design"
-        )
+    parser.parse_args()
 
     main_new_design()
 

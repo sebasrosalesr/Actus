@@ -66,13 +66,8 @@ def _build_suggestions(normalized_query: str) -> list[dict[str, str]]:
     return [
         {
             "id": "customer_history",
-            "label": f"Customer history ({normalized_query})",
-            "prefix": f"customer tickets {normalized_query}",
-        },
-        {
-            "id": "analyze_account",
-            "label": f"Analyze account {normalized_query}",
-            "prefix": f"analyze account {normalized_query}",
+            "label": f"Show all tickets for customer {normalized_query}",
+            "prefix": f"show all tickets for customer {normalized_query}",
         },
     ]
 

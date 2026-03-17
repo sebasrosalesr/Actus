@@ -28,6 +28,16 @@ class TestCustomerAnalysisIntent(unittest.TestCase):
         self.assertIn("customer_analysis", meta)
         self.assertEqual("SGP", meta["customer_analysis"]["normalized_query"])
         self.assertIn("suggestions", meta)
+        self.assertEqual(1, len(meta["suggestions"]))
+        self.assertEqual("customer_history", meta["suggestions"][0]["id"])
+        self.assertEqual(
+            "Show all tickets for customer SGP",
+            meta["suggestions"][0]["label"],
+        )
+        self.assertEqual(
+            "show all tickets for customer SGP",
+            meta["suggestions"][0]["prefix"],
+        )
         service.analyze_customer.assert_called_once_with(
             customer_query="SGP",
             match_mode="account_prefix",
@@ -62,6 +72,10 @@ class TestCustomerAnalysisIntent(unittest.TestCase):
         self.assertIn("analysis generated", text.lower())
         self.assertEqual("customer_analysis", meta.get("intent_id"))
         self.assertIn("customer_analysis", meta)
+        self.assertEqual(
+            "show all tickets for customer SGP",
+            meta["suggestions"][0]["prefix"],
+        )
         service.analyze_customer.assert_called_once()
 
 

@@ -24,7 +24,8 @@ from scripts import build_rag_index
 DEFAULT_OPENROUTER_FALLBACK_MODEL = "google/gemini-3.1-flash-lite-preview"
 
 
-load_dotenv(dotenv_path=Path(__file__).with_name(".env"), override=True)
+# Local .env should fill missing values, not override deployed environment.
+load_dotenv(dotenv_path=Path(__file__).with_name(".env"), override=False)
 
 APP = FastAPI(title="Actus Backend", version="0.1.0")
 
@@ -94,6 +95,9 @@ APP.include_router(quality_router)
 DATA_TTL_SEC = 120
 _CACHE: Dict[str, Any] = {"df": None, "loaded_at": 0.0}
 _RAG_REBUILD_STOP = threading.Event()
+_RAG_PRELOAD_LOCK = threading.Lock()
+_RAG_PRELOAD_STARTED = False
+_RAG_WARMUP_LOCK = threading.Lock()
 
 
 class AskRequest(BaseModel):
@@ -312,22 +316,23 @@ def _get_rag_rebuild_interval_sec() -> int:
             return max(0, int(raw))
         except ValueError:
             return 0
-    env = os.environ.get("ACTUS_ENV", "").strip().lower()
-    if env in {"dev", "development", "local"}:
-        return 1800
+    # Disabled by default; opt in explicitly with ACTUS_RAG_REBUILD_SEC.
     return 0
 
 
 def _rag_rebuild_loop(interval_sec: int) -> None:
     if interval_sec <= 0:
         return
-    # Initial wait to let the server finish booting.
-    _RAG_REBUILD_STOP.wait(timeout=5)
+    # Preload already warms the service. Wait a full interval before rebuilding.
+    _RAG_REBUILD_STOP.wait(timeout=interval_sec)
     while not _RAG_REBUILD_STOP.is_set():
         try:
-            print("[rag] rebuild started")
-            build_rag_index.main()
-            print("[rag] rebuild finished")
+            with _RAG_WARMUP_LOCK:
+                if _RAG_REBUILD_STOP.is_set():
+                    break
+                print("[rag] rebuild started")
+                build_rag_index.main([])
+                print("[rag] rebuild finished")
         except Exception as exc:
             print(f"[rag] rebuild failed: {exc}")
         _RAG_REBUILD_STOP.wait(timeout=interval_sec)
@@ -354,12 +359,29 @@ def _should_preload_new_rag() -> bool:
 def _preload_new_rag_service() -> None:
     if not _should_preload_new_rag():
         return
-    try:
-        service = get_runtime_service(refresh=True)
-        print(f"[rag:new_design] preload complete (chunks={service.chunk_count})")
-    except Exception as exc:
-        # Warmup should not block API boot.
-        print(f"[rag:new_design] preload failed: {exc}")
+    global _RAG_PRELOAD_STARTED
+    with _RAG_PRELOAD_LOCK:
+        if _RAG_PRELOAD_STARTED:
+            return
+        _RAG_PRELOAD_STARTED = True
+
+    def _run() -> None:
+        try:
+            with _RAG_WARMUP_LOCK:
+                print("[rag:new_design] preload started")
+                service = get_runtime_service(refresh=False)
+                service.warm()
+                print(f"[rag:new_design] preload complete (chunks={service.chunk_count})")
+        except Exception as exc:
+            # Warmup should not block API boot.
+            print(f"[rag:new_design] preload failed: {exc}")
+
+    thread = threading.Thread(
+        target=_run,
+        name="rag-new-design-preload",
+        daemon=True,
+    )
+    thread.start()
 
 
 @APP.get("/api/health")

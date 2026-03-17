@@ -18,6 +18,7 @@ ensure_openmp_env()
 def main_new_design() -> None:
     from app.rag.new_design.index_build import build_pipeline_artifacts, index_pipeline_artifacts
     from app.rag.new_design.ingest import load_credit_requests, load_env, load_investigation_notes
+    from app.rag.new_design.snapshot import save_canonical_tickets
 
     load_env()
     credit_rows = load_credit_requests()
@@ -27,6 +28,7 @@ def main_new_design() -> None:
         credit_rows=credit_rows,
         investigation_rows=investigation_rows,
     )
+    snapshot_path = save_canonical_tickets(artifacts.canonical_tickets)
 
     target_data_dir_raw = os.environ.get("ACTUS_NEW_RAG_DATA_DIR", "").strip()
     target_data_dir = (
@@ -37,15 +39,15 @@ def main_new_design() -> None:
     info = index_pipeline_artifacts(artifacts, data_dir=target_data_dir)
     print(
         f"Indexed {info['chunk_count']} chunks using new_design pipeline "
-        f"(dim={info['vector_dim']})."
+        f"(dim={info['vector_dim']}). Canonical snapshot: {snapshot_path}"
     )
 
 
-def main() -> None:
+def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(
         description="Build RAG index (new_design pipeline).",
     )
-    parser.parse_args()
+    parser.parse_args(argv)
 
     main_new_design()
 

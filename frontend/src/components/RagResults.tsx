@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
-import { Search, Sparkles, FileText, Database, ArrowRight, X, Activity } from "lucide-react";
+import { Search, Sparkles, FileText, Database, ArrowRight, X, Activity, Target } from "lucide-react";
+import { Analysis } from "./Analysis";
 
 type RagSnippet = {
   text: string;
@@ -46,6 +47,21 @@ type RagResponse = {
   results: RagResult[];
 };
 
+type NewRagResult = {
+  ticket_id: string;
+  score: number;
+  chunk_type: string;
+  text: string;
+  metadata: Record<string, unknown>;
+};
+
+type NewRagResponse = {
+  query: string;
+  intent: string;
+  not_found: boolean;
+  results: NewRagResult[];
+};
+
 type NextActionTraceResponse = {
   ticket_id?: string;
   decision: {
@@ -57,6 +73,45 @@ type NextActionTraceResponse = {
   };
   context: Record<string, any>;
   trace: Array<Record<string, any>>;
+};
+
+type ItemAnalysisResponse = {
+  item_number: string;
+  ticket_count: number;
+  invoice_count: number;
+  line_count: number;
+  total_credit: number;
+  root_cause_counts: Record<string, number>;
+  root_cause_counts_all: Record<string, number>;
+  sales_rep_counts: Record<string, number>;
+  account_prefix_counts: Record<string, number>;
+  tickets: string[];
+  invoices: string[];
+  first_seen: string | null;
+  last_seen: string | null;
+  answer: string;
+};
+
+type TicketAnalysisResponse = {
+  ticket_id: string;
+  primary_root_cause: string;
+  supporting_root_causes: string[];
+  sales_reps: string[];
+  account_prefixes: string[];
+  credit_total: number;
+  line_count: number;
+  entered_to_credited_days: number | null;
+  investigation_to_credited_days: number | null;
+  days_open: number | null;
+  days_pending_billing_to_credit: number | null;
+  threshold_exceeded: boolean;
+  is_credited: boolean;
+  last_status_timestamp: string | null;
+  last_status_event_type: string | null;
+  invoice_numbers: string[];
+  item_numbers: string[];
+  investigation_highlights: string[];
+  answer: string;
 };
 
 function formatScore(score: number) {
@@ -87,6 +142,84 @@ function extractTotalCredit(text: string): string | null {
   return m ? m[1] : null;
 }
 
+function toStringArray(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value.map((x) => String(x)).filter((x) => x.length > 0);
+}
+
+function mapNewResultToRagResult(row: NewRagResult): RagResult {
+  const metadata = row.metadata ?? {};
+  const rootCausesAll = toStringArray(metadata.root_cause_ids);
+  const invoiceIds = toStringArray(metadata.invoice_numbers);
+
+  return {
+    ticket_id: String(row.ticket_id ?? ""),
+    score: Number(row.score ?? 0),
+    reason_for_credit:
+      typeof metadata.reason_for_credit === "string" ? metadata.reason_for_credit : null,
+    root_cause:
+      typeof metadata.root_cause_primary_id === "string"
+        ? metadata.root_cause_primary_id
+        : rootCausesAll[0] ?? null,
+    root_causes_all: rootCausesAll,
+    invoice_count: invoiceIds.length,
+    has_multiple_invoices: invoiceIds.length > 1,
+    snippet_count: 1,
+    snippets: [{ text: String(row.text ?? ""), chunk_type: String(row.chunk_type ?? "event") }],
+  };
+}
+
+function sortedCountEntries(values: Record<string, number> | undefined): Array<[string, number]> {
+  const entries = Object.entries(values ?? {});
+  entries.sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
+  return entries;
+}
+
+function extractItemNumberFromQuery(raw: string): string | null {
+  const query = String(raw || "").trim();
+  if (!query) return null;
+
+  // Preferred: explicit "item 1007986" or "item number: 1007986"
+  const explicitMatch = query.match(/\bitem(?:\s*(?:number|#))?\s*[:\-]?\s*([A-Za-z0-9-]{3,})\b/i);
+  if (explicitMatch?.[1]) {
+    return explicitMatch[1].toUpperCase();
+  }
+
+  // Fallback: first token that looks like an item identifier (has digits, length >= 5)
+  const tokens = query.match(/[A-Za-z0-9-]+/g) ?? [];
+  for (const token of tokens) {
+    const value = token.trim().toUpperCase();
+    if (/\d/.test(value) && value.length >= 5) {
+      return value;
+    }
+  }
+
+  // Last fallback: single-token input
+  if (tokens.length === 1) {
+    return tokens[0].toUpperCase();
+  }
+
+  return null;
+}
+
+function extractTicketIdFromQuery(raw: string): string | null {
+  const query = String(raw || "").trim();
+  if (!query) return null;
+
+  const explicitR = query.match(/\bR-?\d{4,7}\b/i);
+  if (explicitR?.[0]) {
+    const value = explicitR[0].toUpperCase();
+    return value.startsWith("R-") ? value : value.replace(/^R/, "R-");
+  }
+
+  const ticketMatch = query.match(/\bticket(?:\s*(?:id|number|#))?\s*[:\-]?\s*(\d{4,7})\b/i);
+  if (ticketMatch?.[1]) {
+    return `R-${ticketMatch[1]}`;
+  }
+
+  return null;
+}
+
 export function RagResults({
   apiBase = import.meta.env.VITE_API_BASE_URL ?? import.meta.env.VITE_API_BASE ?? "http://127.0.0.1:8000",
 }: {
@@ -105,6 +238,8 @@ export function RagResults({
   const [traceLoading, setTraceLoading] = useState<Record<string, boolean>>({});
   const [loading, setLoading] = useState(false);
   const [data, setData] = useState<RagResponse | null>(null);
+  const [itemAnalysis, setItemAnalysis] = useState<ItemAnalysisResponse | null>(null);
+  const [ticketAnalysis, setTicketAnalysis] = useState<TicketAnalysisResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [isMounted, setIsMounted] = useState(false);
 
@@ -117,16 +252,73 @@ export function RagResults({
     setLoading(true);
     setError(null);
     try {
-      const res = await fetch(`${apiBase}/rag/search`, {
+      const res = await fetch(`${apiBase}/rag/new/search`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ query, top_k: topK }),
+        body: JSON.stringify({ query, top_k: topK, refresh: false }),
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const json = (await res.json()) as RagResponse;
-      setData(json);
+      const json = (await res.json()) as NewRagResponse;
+      const mapped: RagResponse = {
+        results: (json.results ?? []).map(mapNewResultToRagResult),
+      };
+      setData(mapped);
+      setItemAnalysis(null);
+      setTicketAnalysis(null);
     } catch (e: any) {
       setError(e?.message ?? "Search failed");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function runItemAnalysis() {
+    const itemNumber = extractItemNumberFromQuery(query);
+    if (!itemNumber) {
+      setError("Enter an item number (example: 1007986 or 'item 1007986').");
+      return;
+    }
+    setLoading(true);
+    setError(null);
+    try {
+      const res = await fetch(`${apiBase}/rag/new/item-analysis`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ item_number: itemNumber, refresh: false }),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const json = (await res.json()) as ItemAnalysisResponse;
+      setItemAnalysis(json);
+      setTicketAnalysis(null);
+      setData({ results: [] });
+    } catch (e: any) {
+      setError(e?.message ?? "Item analysis failed");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function runTicketAnalysis() {
+    const ticketId = extractTicketIdFromQuery(query);
+    if (!ticketId) {
+      setError("Enter a ticket id (example: R-058284 or 'ticket 058284').");
+      return;
+    }
+    setLoading(true);
+    setError(null);
+    try {
+      const res = await fetch(`${apiBase}/rag/new/ticket-analysis`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ticket_id: ticketId, threshold_days: 30, refresh: false }),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const json = (await res.json()) as TicketAnalysisResponse;
+      setTicketAnalysis(json);
+      setItemAnalysis(null);
+      setData({ results: [] });
+    } catch (e: any) {
+      setError(e?.message ?? "Ticket analysis failed");
     } finally {
       setLoading(false);
     }
@@ -229,8 +421,8 @@ export function RagResults({
 
           {/* Search Bar */}
           <div className="relative group z-20">
-            <div className="absolute -inset-1 bg-gradient-to-r from-cyan-500/20 via-indigo-500/20 to-cyan-500/20 rounded-2xl blur-md opacity-40 group-hover:opacity-75 transition duration-700"></div>
-            <div className="relative flex items-center bg-obsidian-900/90 backdrop-blur-xl border border-white/10 group-hover:border-white/20 rounded-2xl p-2 shadow-2xl transition-all duration-300">
+            <div className="absolute -inset-1 bg-gradient-to-r from-cyan-500/20 via-indigo-500/20 to-cyan-500/20 rounded-2xl blur-md opacity-40 group-hover:opacity-100 transition duration-700"></div>
+            <div className="relative flex items-center bg-obsidian-950/80 backdrop-blur-2xl border border-white/[0.08] group-hover:border-white/[0.15] rounded-2xl p-2 shadow-2xl transition-all duration-300">
               <div className="pl-4 text-cyan-400/80 group-focus-within:text-cyan-400 transition-colors">
                 <Search className="w-6 h-6" />
               </div>
@@ -250,7 +442,8 @@ export function RagResults({
                     Max Results
                   </span>
                   <input
-                    className="w-12 bg-transparent text-right text-sm font-bold text-slate-300 focus:text-cyan-400 focus:outline-none transition-colors border-b border-transparent focus:border-cyan-500/50"
+                    className="w-12 bg-transparent text-right text-sm font-bold text-slate-300 focus:text-cyan-400 focus:outline-none transition-colors border-b border-transparent focus:border-cyan-500/50 appearance-none"
+                    style={{ WebkitAppearance: 'none', MozAppearance: 'textfield' }}
                     type="number"
                     min={1}
                     max={50}
@@ -276,6 +469,20 @@ export function RagResults({
                     </div>
                   )}
                 </button>
+                <button
+                  className="px-5 py-3 rounded-xl bg-white/[0.04] hover:bg-cyan-500/10 border border-white/[0.08] hover:border-cyan-500/30 text-slate-200 hover:text-cyan-200 font-bold text-sm tracking-wide transition-all duration-300 disabled:opacity-50 disabled:cursor-not-allowed hidden md:block"
+                  onClick={runItemAnalysis}
+                  disabled={loading}
+                >
+                  Analyze Item
+                </button>
+                <button
+                  className="px-5 py-3 rounded-xl bg-white/[0.04] hover:bg-cyan-500/10 border border-white/[0.08] hover:border-cyan-500/30 text-slate-200 hover:text-cyan-200 font-bold text-sm tracking-wide transition-all duration-300 disabled:opacity-50 disabled:cursor-not-allowed hidden md:block"
+                  onClick={runTicketAnalysis}
+                  disabled={loading}
+                >
+                  Analyze Ticket
+                </button>
               </div>
             </div>
           </div>
@@ -291,6 +498,133 @@ export function RagResults({
         </div>
 
         <div className="flex flex-col gap-4">
+          {ticketAnalysis && (
+            <Analysis 
+              data={ticketAnalysis} 
+              onSuggestionClick={(query) => {
+                setQuery(query);
+                runSearch();
+              }} 
+            />
+          )}
+
+          {itemAnalysis && (
+            <div className="relative w-full max-w-5xl group/analysis">
+              {/* Background Glow Effect */}
+              <div className="absolute -inset-0.5 bg-gradient-to-br from-cyan-500/20 via-indigo-500/10 to-transparent rounded-3xl blur-xl opacity-50 group-hover/analysis:opacity-100 transition duration-700 pointer-events-none"></div>
+
+              <div className="relative bg-obsidian-950/80 border border-white/[0.08] rounded-3xl overflow-hidden shadow-2xl backdrop-blur-xl transition-all duration-500 hover:border-cyan-500/30">
+                {/* Header Section */}
+                <div className="p-6 md:p-8 flex flex-col md:flex-row md:items-center justify-between gap-6 border-b border-white/[0.04] bg-gradient-to-b from-white/[0.02] to-transparent">
+                  <div className="flex items-start gap-4">
+                    <div className="w-12 h-12 rounded-2xl bg-gradient-to-br from-cyan-400/20 to-indigo-600/20 border border-cyan-500/30 flex items-center justify-center flex-shrink-0 shadow-[0_0_15px_rgba(34,211,238,0.15)] group-hover/analysis:shadow-[0_0_25px_rgba(34,211,238,0.3)] transition-all">
+                      <Database className="w-6 h-6 text-cyan-400" />
+                    </div>
+                    <div>
+                      <div className="flex items-center gap-3">
+                        <h3 className="text-2xl font-bold font-display tracking-tight text-white drop-shadow-sm">
+                          Item <span className="text-transparent bg-clip-text bg-gradient-to-r from-cyan-400 to-indigo-400">{itemAnalysis.item_number}</span> Analysis
+                        </h3>
+                      </div>
+                      <p className="text-sm text-slate-400 mt-1.5 flex items-center gap-2 font-medium">
+                        {itemAnalysis.ticket_count} tickets • {itemAnalysis.invoice_count} invoices • {itemAnalysis.line_count} lines
+                      </p>
+                    </div>
+                  </div>
+                  
+                  {/* Primary Metric: Total Credit */}
+                  <div className="px-6 py-4 rounded-2xl bg-obsidian-900 border border-emerald-500/20 shadow-[0_0_20px_rgba(16,185,129,0.05)] flex flex-col items-end min-w-[180px] group-hover/analysis:border-emerald-500/40 transition-colors">
+                    <span className="text-[10px] uppercase tracking-[0.2em] text-emerald-500/80 font-bold mb-1">Total Credit</span>
+                    <div className="text-emerald-400 font-mono text-3xl font-bold tracking-tight">
+                      ${itemAnalysis.total_credit.toFixed(2)}
+                    </div>
+                  </div>
+                </div>
+
+                <div className="p-6 md:p-8 space-y-8">
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    {/* Primary Root Causes Card */}
+                    <div className="bg-obsidian-900/50 border border-white/[0.05] rounded-2xl p-5 hover:bg-obsidian-900/80 transition-colors">
+                      <div className="text-[10px] uppercase tracking-[0.15em] text-slate-500 font-bold mb-3 flex items-center gap-2">
+                        <Activity className="w-3.5 h-3.5" /> Primary Root Causes
+                      </div>
+                      <div className="flex flex-wrap gap-2">
+                        {sortedCountEntries(itemAnalysis.root_cause_counts).map(([root, count]) => (
+                          <span key={`primary-${root}`} className="px-2.5 py-1.5 rounded-xl bg-gradient-to-r from-amber-500/10 to-orange-500/10 border border-amber-500/30 text-amber-300 text-xs font-medium shadow-[0_0_10px_rgba(245,158,11,0.1)] cursor-default">
+                            {root} <span className="text-amber-500/60 ml-1">({count})</span>
+                          </span>
+                        ))}
+                        {sortedCountEntries(itemAnalysis.root_cause_counts).length === 0 && (
+                          <span className="text-xs text-slate-500 italic">No primary root causes found.</span>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* All Root Causes Card */}
+                    <div className="bg-obsidian-900/50 border border-white/[0.05] rounded-2xl p-5 hover:bg-obsidian-900/80 transition-colors">
+                      <div className="text-[10px] uppercase tracking-[0.15em] text-slate-500 font-bold mb-3 flex items-center gap-2">
+                        <Target className="w-3.5 h-3.5" /> All Root Causes (Line-Level)
+                      </div>
+                      <div className="flex flex-wrap gap-2">
+                        {sortedCountEntries(itemAnalysis.root_cause_counts_all).map(([root, count]) => (
+                          <span key={`all-${root}`} className="px-2.5 py-1.5 rounded-xl bg-white/[0.03] border border-white/10 text-slate-300 text-xs font-medium hover:bg-white/[0.06] hover:border-cyan-500/30 hover:text-cyan-200 transition-all cursor-default">
+                            {root} <span className="text-slate-500 group-hover:text-cyan-600/50 ml-1">({count})</span>
+                          </span>
+                        ))}
+                        {sortedCountEntries(itemAnalysis.root_cause_counts_all).length === 0 && (
+                          <span className="text-xs text-slate-500 italic">No root causes found.</span>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    {/* Top Sales Reps Card */}
+                    <div className="bg-white/[0.02] border border-white/[0.04] rounded-2xl p-5">
+                      <div className="text-[10px] uppercase tracking-widest text-slate-500 font-bold mb-3">
+                        Top Sales Reps
+                      </div>
+                      <div className="text-sm font-mono text-slate-300 leading-relaxed">
+                        {sortedCountEntries(itemAnalysis.sales_rep_counts)
+                          .slice(0, 5)
+                          .map(([rep, count]) => `${rep} (${count})`)
+                          .join(", ") || "none"}
+                      </div>
+                    </div>
+
+                    {/* Top Account Prefixes Card */}
+                    <div className="bg-white/[0.02] border border-white/[0.04] rounded-2xl p-5">
+                      <div className="text-[10px] uppercase tracking-widest text-slate-500 font-bold mb-3">
+                        Top Account Prefixes
+                      </div>
+                      <div className="text-sm font-mono text-slate-300 leading-relaxed">
+                        {sortedCountEntries(itemAnalysis.account_prefix_counts)
+                          .slice(0, 5)
+                          .map(([prefix, count]) => `${prefix} (${count})`)
+                          .join(", ") || "none"}
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="text-xs text-slate-500 flex items-center gap-3">
+                    <span>First observed: <span className="text-slate-300 ml-1 bg-white/[0.03] px-2 py-0.5 rounded border border-white/[0.05]">{itemAnalysis.first_seen ?? "unknown"}</span></span>
+                    <span>•</span>
+                    <span>Last observed: <span className="text-slate-300 ml-1 bg-white/[0.03] px-2 py-0.5 rounded border border-white/[0.05]">{itemAnalysis.last_seen ?? "unknown"}</span></span>
+                  </div>
+
+                  {/* Summary Box */}
+                  <div className="bg-gradient-to-r from-cyan-900/10 to-transparent border-l-2 border-cyan-500 p-5 rounded-r-2xl">
+                    <div className="flex items-center gap-2 mb-3">
+                      <Sparkles className="w-4 h-4 text-cyan-400" />
+                      <h3 className="text-xs font-bold text-cyan-400 uppercase tracking-widest">Summary Insights</h3>
+                    </div>
+                    <p className="text-sm text-slate-300 whitespace-pre-wrap font-sans leading-relaxed">{itemAnalysis.answer}</p>
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+
           {results.map((r) => {
             const summarySnippet =
               (r.snippets ?? []).find((s) => s.chunk_type === "summary") ?? r.snippets?.[0];
@@ -330,32 +664,32 @@ export function RagResults({
             return (
               <div
                 key={r.ticket_id}
-                className="group relative bg-obsidian-950/40 backdrop-blur-md border border-white/[0.08] rounded-2xl overflow-hidden transition-all duration-300 hover:border-cyan-500/30 hover:shadow-2xl hover:shadow-cyan-900/10"
+                className="group relative bg-obsidian-950/40 backdrop-blur-xl border border-white/[0.08] rounded-3xl overflow-hidden transition-all duration-500 hover:border-cyan-500/30 shadow-lg hover:shadow-[0_0_30px_rgba(34,211,238,0.1)]"
               >
-                <div className="absolute inset-0 bg-gradient-to-br from-cyan-500/[0.03] via-transparent to-transparent opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none" />
+                <div className="absolute inset-0 bg-gradient-to-br from-cyan-500/[0.02] via-transparent to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-700 pointer-events-none" />
 
                 <div className="relative p-6 md:p-8">
-                  <div className="flex flex-col md:flex-row items-start justify-between gap-6">
-                    <div className="flex-1 space-y-5">
+                  <div className="flex flex-col xl:flex-row items-start justify-between gap-6">
+                    <div className="flex-1 space-y-5 w-full">
 
                       {/* Header Row */}
-                      <div className="flex items-start gap-4">
-                        <div className="mt-1 w-12 h-12 rounded-2xl bg-gradient-to-br from-slate-800 to-slate-900 border border-white/10 flex items-center justify-center shadow-inner">
-                          <FileText className="w-5 h-5 text-cyan-400" />
+                      <div className="flex items-start gap-5">
+                        <div className="mt-1 w-14 h-14 rounded-2xl bg-gradient-to-br from-obsidian-800 to-obsidian-900 border border-white/[0.08] flex items-center justify-center flex-shrink-0 shadow-inner group-hover:border-cyan-500/30 transition-colors">
+                          <FileText className="w-6 h-6 text-cyan-400 drop-shadow-[0_0_10px_rgba(34,211,238,0.3)]" />
                         </div>
-                        <div>
-                          <div className="flex items-center gap-3">
-                            <h3 className="text-2xl font-bold font-display text-white tracking-tight">
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center flex-wrap gap-3">
+                            <h3 className="text-2xl font-bold font-display text-white tracking-tight drop-shadow-sm">
                               {r.ticket_id}
                             </h3>
                             {isCompleted && (
-                              <span className="px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 uppercase tracking-wider">
-                                Resolved
+                              <span className="px-3 py-1 rounded-full text-[10px] font-bold bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 uppercase tracking-widest flex items-center gap-1.5">
+                                <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" /> Resolved
                               </span>
                             )}
                             {r.score > 0.8 && !isCompleted && (
-                              <span className="px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-cyan-500/10 border border-cyan-500/20 text-cyan-400 uppercase tracking-wider">
-                                High Match
+                              <span className="px-3 py-1 rounded-full text-[10px] font-bold bg-cyan-500/10 border border-cyan-500/20 text-cyan-400 uppercase tracking-widest flex items-center gap-1.5">
+                                <Sparkles className="w-3 h-3" /> High Match
                               </span>
                             )}
                           </div>
@@ -405,36 +739,36 @@ export function RagResults({
                         )}
                       </div>
 
-                      <div className="grid grid-cols-2 sm:flex sm:flex-wrap gap-3 text-xs font-mono text-slate-400 mt-2">
+                      <div className="grid grid-cols-2 md:grid-cols-3 xl:flex xl:flex-wrap gap-3 text-xs font-mono text-slate-400 mt-4">
                         {customer && (
-                          <div className="px-3 py-2 rounded-lg bg-slate-900/50 border border-white/5 flex flex-col sm:flex-row sm:items-center sm:gap-2">
-                            <span className="text-slate-600 uppercase tracking-wider text-[10px] font-bold">Customer</span>
-                            <span className="text-slate-300">{customer}</span>
+                          <div className="px-4 py-3 rounded-xl bg-obsidian-900 border border-white/[0.04] flex flex-col justify-center min-w-[140px] group/meta hover:bg-obsidian-800 transition-colors">
+                            <span className="text-slate-500 uppercase tracking-[0.2em] text-[9px] font-bold mb-1">Customer</span>
+                            <span className="text-slate-200 truncate group-hover/meta:text-white transition-colors">{customer}</span>
                           </div>
                         )}
                         {invoice && (
-                          <div className="px-3 py-2 rounded-lg bg-slate-900/50 border border-white/5 flex flex-col sm:flex-row sm:items-center sm:gap-2">
-                            <span className="text-slate-600 uppercase tracking-wider text-[10px] font-bold">Invoice</span>
-                            <span className="text-cyan-300">{invoice}</span>
+                          <div className="px-4 py-3 rounded-xl bg-obsidian-900 border border-white/[0.04] flex flex-col justify-center min-w-[140px] group/meta hover:bg-obsidian-800 transition-colors">
+                            <span className="text-slate-500 uppercase tracking-[0.2em] text-[9px] font-bold mb-1">Invoice</span>
+                            <span className="text-cyan-300 truncate group-hover/meta:text-cyan-200 transition-colors">{invoice}</span>
                           </div>
                         )}
                         {totalCredit && (
-                          <div className="px-3 py-2 rounded-lg bg-slate-900/50 border border-white/5 flex flex-col sm:flex-row sm:items-center sm:gap-2">
-                            <span className="text-slate-600 uppercase tracking-wider text-[10px] font-bold">Credit</span>
-                            <span className="text-emerald-400">${totalCredit}</span>
+                          <div className="px-4 py-3 rounded-xl bg-obsidian-900 border border-white/[0.04] flex flex-col justify-center min-w-[140px] group/meta hover:border-emerald-500/30 transition-colors">
+                            <span className="text-emerald-500/70 uppercase tracking-[0.2em] text-[9px] font-bold mb-1">Credit</span>
+                            <span className="text-emerald-400 font-bold group-hover/meta:text-emerald-300 transition-colors">${totalCredit}</span>
                           </div>
                         )}
                       </div>
                     </div>
 
                     {/* Action Buttons */}
-                    <div className="flex flex-row md:flex-col gap-2 w-full md:w-auto shrink-0 mt-4 md:mt-0">
+                    <div className="flex flex-row xl:flex-col gap-3 w-full xl:w-48 shrink-0 mt-2 xl:mt-0">
                       <button
-                        className="flex-1 md:w-36 px-4 py-2.5 rounded-xl bg-cyan-500/10 hover:bg-cyan-500/20 border border-cyan-500/30 text-cyan-300 text-sm font-semibold transition-all group/btn flex items-center justify-center gap-2 hover:shadow-[0_0_15px_rgba(6,182,212,0.2)]"
+                        className="flex-1 px-4 py-3.5 rounded-xl bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-400 hover:to-blue-500 text-white text-sm font-bold transition-all group/btn flex items-center justify-center gap-2 shadow-[0_0_20px_-5px_rgba(6,182,212,0.4)] hover:shadow-[0_0_30px_-5px_rgba(6,182,212,0.6)]"
                         onClick={() => console.log("open ticket", r.ticket_id)}
                       >
                         <span>Open Ticket</span>
-                        <ArrowRight className="w-4 h-4 group-hover/btn:translate-x-0.5 transition-transform" />
+                        <ArrowRight className="w-4 h-4 group-hover/btn:translate-x-1 transition-transform" />
                       </button>
 
                       <div className="flex gap-2">
@@ -521,51 +855,66 @@ export function RagResults({
                     </div>
                   </div>
 
-                  {/* Evidence Section - Styled as a coherent block */}
-                  <div className="mt-6 pt-6 border-t border-white/[0.08]">
-                    <div className="flex items-center gap-2 mb-4">
-                      <div className="p-1 rounded bg-white/5">
-                        <Sparkles className="w-3.5 h-3.5 text-cyan-400" />
+                  {/* Evidence Section */}
+                  <div className="mt-8 pt-6 border-t border-white/[0.04]">
+                    <div className="flex items-center gap-3 mb-5">
+                      <div className="p-1.5 rounded-lg bg-cyan-500/10 border border-cyan-500/20">
+                        <Sparkles className="w-4 h-4 text-cyan-400" />
                       </div>
-                      <span className="text-xs font-bold text-slate-400 uppercase tracking-widest">Insights & Evidence</span>
+                      <span className="text-xs font-bold text-slate-300 uppercase tracking-[0.2em]">Insights & Evidence</span>
                     </div>
 
                     <div className="space-y-4">
                       {/* Next Action Box */}
                       {(closureNote || r.next_action) && (
-                        <div className="rounded-xl border border-indigo-500/20 bg-indigo-500/[0.05] p-4 relative overflow-hidden">
-                          <div className="absolute top-0 right-0 p-2 opacity-10">
-                            <Activity className="w-16 h-16 text-indigo-500" />
+                        <div className="rounded-2xl border border-indigo-500/30 bg-gradient-to-r from-indigo-500/[0.08] to-transparent p-5 relative overflow-hidden group/action">
+                          <div className="absolute top-0 right-0 p-4 opacity-5 group-hover/action:opacity-10 transition-opacity">
+                            <Activity className="w-24 h-24 text-indigo-400" />
                           </div>
                           <div className="relative z-10">
-                            <div className="flex items-center gap-2 mb-2">
-                              <span className="text-indigo-300 text-[10px] font-bold uppercase tracking-widest">Recommended Action</span>
+                            <div className="flex items-center gap-3 mb-3">
+                              <span className="text-indigo-400 text-[10px] font-bold uppercase tracking-[0.2em] flex items-center gap-2">
+                                <span className="w-1.5 h-1.5 rounded-full bg-indigo-500"></span> Recommended Action
+                              </span>
                               {confidenceLabel && (
-                                <span className={`px-2 py-0.5 rounded border text-[10px] font-bold uppercase ${confidenceClass}`}>
+                                <span className={`px-2.5 py-1 rounded-lg border text-[10px] font-bold uppercase tracking-widest ${confidenceClass}`}>
                                   {confidenceLabel} Confidence
                                 </span>
                               )}
                             </div>
-                            <p className="text-sm text-indigo-100/90 leading-relaxed">
+                            <p className="text-[15px] text-indigo-50/90 leading-relaxed font-medium max-w-4xl">
                               {closureNote || r.next_action}
                             </p>
                           </div>
                         </div>
                       )}
 
+                      {/* Content Area */}
+                      <div className="bg-obsidian-900/50 rounded-2xl border border-white/[0.04] relative group/content hover:bg-obsidian-900/80 transition-colors">
+                        <div className="p-5">
+                          {summarySnippet ? (
+                            <div className="text-sm text-slate-300 leading-relaxed whitespace-pre-line font-sans group-hover/content:text-slate-200 transition-colors">
+                              {summarySnippet.text}
+                            </div>
+                          ) : (
+                            <p className="text-slate-500 italic text-sm">No summary available.</p>
+                          )}
+                        </div>
+                      </div>
+
                       {/* Credit Numbers */}
                       {creditNumbers.length > 0 && (
-                        <div className="flex items-start gap-3 p-3 rounded-xl bg-white/[0.02] border border-white/[0.05]">
-                          <span className="text-xs font-bold text-slate-500 uppercase mt-1">Credits</span>
+                        <div className="flex items-start gap-4 p-4 rounded-xl bg-white/[0.02] border border-white/[0.04]">
+                          <span className="text-[10px] font-bold text-slate-500 uppercase tracking-widest mt-1.5 w-16">Credits</span>
                           <div className="flex flex-wrap gap-2 flex-1">
                             {crVisible.map((cr: string) => (
-                              <span key={cr} className="px-2 py-1 rounded bg-slate-800/50 text-xs font-mono text-cyan-300/90 border border-white/5">
+                              <span key={cr} className="px-2.5 py-1.5 rounded-lg bg-obsidian-900 text-xs font-mono text-emerald-300 drop-shadow-sm border border-emerald-500/10">
                                 {cr}
                               </span>
                             ))}
                             {creditNumbers.length > 10 && (
                               <button
-                                className="text-xs text-cyan-400 hover:text-cyan-300 underline underline-offset-2"
+                                className="text-xs text-cyan-400 hover:text-cyan-300 underline underline-offset-4 ml-2 mt-1.5 font-medium transition-colors"
                                 onClick={() => setExpandedCrFor(showAllCr ? null : r.ticket_id)}
                               >
                                 {showAllCr ? "Show less" : `+${creditNumbers.length - 10} more`}
@@ -574,19 +923,6 @@ export function RagResults({
                           </div>
                         </div>
                       )}
-
-                      {/* Content Area */}
-                      <div className="bg-black/10 rounded-xl border border-white/5 min-h-[100px] relative">
-                        <div className="p-4">
-                          {summarySnippet ? (
-                            <div className="text-sm text-slate-300 leading-relaxed whitespace-pre-line font-sans">
-                              {summarySnippet.text}
-                            </div>
-                          ) : (
-                            <p className="text-slate-500 italic text-sm">No summary available.</p>
-                          )}
-                        </div>
-                      </div>
                     </div>
                   </div>
                 </div>

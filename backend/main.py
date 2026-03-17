@@ -21,6 +21,8 @@ from actus.intent_router import actus_answer
 from actus.openrouter_client import openrouter_chat
 from scripts import build_rag_index
 
+DEFAULT_OPENROUTER_FALLBACK_MODEL = "google/gemini-3.1-flash-lite-preview"
+
 
 load_dotenv(dotenv_path=Path(__file__).with_name(".env"), override=True)
 
@@ -82,6 +84,7 @@ ensure_openmp_env()
 
 from app.api.rag import router as rag_router
 from app.api.help import router as help_router
+from app.rag.new_design.service import get_runtime_service
 APP.include_router(rag_router)
 APP.include_router(help_router)
 
@@ -99,7 +102,7 @@ def _openrouter_call(query: str) -> str:
         "ACTUS_OPENROUTER_SYSTEM",
         "You are Actus, an operations copilot for credit and ticket analytics. Be concise and actionable.",
     )
-    fallback_model = os.environ.get("ACTUS_OPENROUTER_MODEL_FALLBACK")
+    fallback_model = os.environ.get("ACTUS_OPENROUTER_MODEL_FALLBACK", "").strip() or DEFAULT_OPENROUTER_FALLBACK_MODEL
 
     messages = [
         {"role": "system", "content": system_prompt},
@@ -233,6 +236,22 @@ def _start_rag_rebuild_loop() -> None:
     thread.start()
 
 
+def _should_preload_new_rag() -> bool:
+    raw = os.environ.get("ACTUS_PRELOAD_NEW_RAG", "1").strip().lower()
+    return raw not in {"0", "false", "no", "off"}
+
+
+def _preload_new_rag_service() -> None:
+    if not _should_preload_new_rag():
+        return
+    try:
+        service = get_runtime_service(refresh=True)
+        print(f"[rag:new_design] preload complete (chunks={service.chunk_count})")
+    except Exception as exc:
+        # Warmup should not block API boot.
+        print(f"[rag:new_design] preload failed: {exc}")
+
+
 @APP.get("/api/health")
 def health() -> Dict[str, str]:
     return {"status": "ok"}
@@ -287,6 +306,7 @@ def user_context(email: str | None = None) -> Dict[str, Any]:
 
 @APP.on_event("startup")
 def _startup() -> None:
+    _preload_new_rag_service()
     _start_rag_rebuild_loop()
 
 

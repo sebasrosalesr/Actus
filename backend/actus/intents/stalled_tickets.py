@@ -4,7 +4,6 @@ import pandas as pd
 
 from actus.intents._time_reasoning import (
     enrich_time_reasoning,
-    summarize_time_reasoning,
 )
 from actus.utils.df_cleaning import coerce_date
 from actus.utils.formatting import format_money
@@ -64,6 +63,35 @@ def _latest_status(value: str) -> str:
         cleaned = text[end:].strip()
         return cleaned or "N/A"
     return text
+
+
+def _format_days(value: float | None, *, decimals: int) -> str:
+    if value is None or pd.isna(value):
+        return "n/a"
+    return f"{float(value):.{decimals}f}d"
+
+
+def _intent_stat_line(df: pd.DataFrame, intent_id: str, label: str) -> str:
+    if "Follow_Up_Intent" not in df.columns:
+        return f"- {label}: 0"
+
+    intents = df["Follow_Up_Intent"].fillna("").astype(str)
+    subset = df[intents == intent_id].copy()
+    count = int(len(subset))
+    if count == 0:
+        return f"- {label}: 0"
+
+    days = pd.to_numeric(subset.get("Days Since Update"), errors="coerce").dropna()
+    avg_days = float(days.mean()) if not days.empty else None
+    median_days = float(days.median()) if not days.empty else None
+    exposure = pd.to_numeric(subset.get("Credit Request Total"), errors="coerce").fillna(0.0).sum()
+
+    return (
+        f"- {label}: {count} ticket(s) "
+        f"• avg {_format_days(avg_days, decimals=1)} "
+        f"• median {_format_days(median_days, decimals=0)} "
+        f"• exposure {format_money(exposure)}"
+    )
 
 
 def intent_stalled_tickets(
@@ -215,7 +243,6 @@ def intent_stalled_tickets(
     stalled_df = enrich_time_reasoning(stalled_df)
     if "Delay_Score" in stalled_df.columns:
         stalled_df["Delay_Score"] = stalled_df["Delay_Score"].round(1)
-    time_summary = summarize_time_reasoning(stalled_df)
 
     lines: list[str] = [
         f"Stalled tickets snapshot (no credit number, no updates for **{stalled_days}+ days**):",
@@ -232,12 +259,21 @@ def intent_stalled_tickets(
         f"({format_money(bucket_exposure['30+'])})",
         "",
         "Time reasoning highlights:",
-        f"- Aging not submitted: "
-        f"{time_summary.get('follow_up_intent_counts', {}).get('I08_FLAG_AGING_NOT_SUBMITTED', 0)}",
-        f"- Billing queue delay: "
-        f"{time_summary.get('follow_up_intent_counts', {}).get('I04_CHECK_BILLING_QUEUE', 0)}",
-        f"- Stale investigation: "
-        f"{time_summary.get('follow_up_intent_counts', {}).get('I03_ESCALATE_STALE_INVESTIGATION', 0)}",
+        _intent_stat_line(
+            stalled_df,
+            "I08_FLAG_AGING_NOT_SUBMITTED",
+            "Aging not submitted",
+        ),
+        _intent_stat_line(
+            stalled_df,
+            "I04_CHECK_BILLING_QUEUE",
+            "Billing queue delay",
+        ),
+        _intent_stat_line(
+            stalled_df,
+            "I03_ESCALATE_STALE_INVESTIGATION",
+            "Stale investigation",
+        ),
         "",
         "Here is a preview of the results.",
     ]

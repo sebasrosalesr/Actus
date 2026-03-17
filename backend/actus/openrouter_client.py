@@ -19,6 +19,9 @@ def openrouter_chat(messages: List[Dict[str, str]], model: Optional[str] = None)
         "model": resolved_model,
         "messages": messages,
     }
+    debug = os.environ.get("ACTUS_OPENROUTER_DEBUG", "").strip().lower() in {"1", "true", "yes", "on"}
+    if debug:
+        print(f"[openrouter] request model={resolved_model} messages={len(messages)}")
     req = urllib.request.Request(
         "https://openrouter.ai/api/v1/chat/completions",
         data=json.dumps(payload).encode("utf-8"),
@@ -46,6 +49,13 @@ def openrouter_chat(messages: List[Dict[str, str]], model: Optional[str] = None)
             raise RuntimeError(f"OpenRouter request failed: {exc}") from exc
 
     data = json.loads(raw)
+    if debug:
+        usage = data.get("usage") or {}
+        print(
+            "[openrouter] response "
+            f"id={data.get('id')} model={data.get('model')} "
+            f"prompt_tokens={usage.get('prompt_tokens')} completion_tokens={usage.get('completion_tokens')}"
+        )
     choice = (data.get("choices") or [{}])[0]
     message = choice.get("message") or {}
     content = message.get("content")

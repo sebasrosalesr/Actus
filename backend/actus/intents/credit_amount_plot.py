@@ -54,29 +54,6 @@ def _parse_window(query: str) -> tuple[pd.Timestamp | None, pd.Timestamp | None,
         except Exception:
             pass
 
-    m = re.search(r"\bfrom\s+(.+?)\s+to\s+(.+)", q_low)
-    if m:
-        raw_start = m.group(1).strip()
-        raw_end = m.group(2).strip()
-        try:
-            dt_start = parser.parse(raw_start, fuzzy=True)
-            dt_end = parser.parse(raw_end, fuzzy=True)
-            start = pd.Timestamp(dt_start).tz_localize(tz) if dt_start.tzinfo is None else pd.Timestamp(dt_start).tz_convert(tz)
-            end = pd.Timestamp(dt_end).tz_localize(tz) if dt_end.tzinfo is None else pd.Timestamp(dt_end).tz_convert(tz)
-            return start.normalize(), end, f"from {start.date()} to {end.date()}"
-        except Exception:
-            pass
-
-    m = re.search(r"\bsince\s+(.+)", q_low)
-    if m:
-        raw = m.group(1).strip()
-        try:
-            dt = parser.parse(raw, fuzzy=True)
-            start = pd.Timestamp(dt).tz_localize(tz) if dt.tzinfo is None else pd.Timestamp(dt).tz_convert(tz)
-            return start.normalize(), now, f"since {start.date()}"
-        except Exception:
-            pass
-
     if "today" in q_low:
         return today, now, "today"
     if "yesterday" in q_low:
@@ -127,6 +104,22 @@ def _parse_window(query: str) -> tuple[pd.Timestamp | None, pd.Timestamp | None,
         start = (today - pd.DateOffset(months=months)).replace(day=1)
         return start, now, f"last {months} months (from {start.date()} to today)"
 
+    m = re.search(r"(?:from\s+)?(\d+)\s+years?\s+ago", q_low)
+    if m:
+        years = int(m.group(1))
+        start = today - pd.DateOffset(years=years)
+        return start, now, f"from {years} years ago"
+
+    m = re.search(r"(?:last|past)\s+(\d+)\s+years?\b", q_low)
+    if m:
+        years = int(m.group(1))
+        start = today - pd.DateOffset(years=years)
+        return start, now, f"last {years} years"
+
+    if re.search(r"\b(?:a|an|1)\s+year\s+ago\b", q_low):
+        start = today - pd.DateOffset(years=1)
+        return start, now, "from 1 year ago"
+
     if "last week" in q_low:
         start = today - pd.Timedelta(days=7)
         return start, now, "last 7 days"
@@ -147,14 +140,16 @@ def _parse_window(query: str) -> tuple[pd.Timestamp | None, pd.Timestamp | None,
         start = today.replace(month=1, day=1)
         return start, now, "this year"
 
+    if "last year" in q_low:
+        start = today - pd.DateOffset(years=1)
+        return start, now, "last year"
+
     return None, None, None
 
 
 def intent_credit_amount_plot(query: str, df: pd.DataFrame):
     q_low = query.lower()
     if not any(term in q_low for term in ["plot", "chart", "graph", "trend"]):
-        return None
-    if "credit" not in q_low:
         return None
 
     df_use = df.copy()
@@ -164,7 +159,7 @@ def intent_credit_amount_plot(query: str, df: pd.DataFrame):
     if not (start_window and end_window):
         return (
             "What date range should I use for the credit amount chart? "
-            "Try: today, yesterday, last 7 days, last month, or a custom range.",
+            "Try: today, yesterday, last 3 weeks, last 4 months, a year ago, or a custom range.",
             None,
             {"follow_up": {"intent": "credit_amount_plot", "prefix": "credit amount chart"}},
         )

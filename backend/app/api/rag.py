@@ -2,74 +2,52 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Literal, Optional
+from typing import Any, Dict, List, Optional
 
-import numpy as np
 import traceback
 import re
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
-from app.rag.embeddings import embed_texts
-from app.rag.rag import (
-    extract_customer,
-    extract_invoice_ids,
-    extract_item_numbers,
-    normalize_chunk_type,
-    normalize_text,
-)
 from app.rag.next_action_engine import evaluate_next_action, evaluate_next_action_with_trace
+from app.rag.new_design.service import get_runtime_service
 from app.rag.store import get_rag_store
 
-
-ChunkType = Literal["summary", "status", "note", "ticket_event", "ticket_summary"]
-
-_TICKET_RE = re.compile(r"^\s*r-\d{4,6}\s*$", re.IGNORECASE)
-
-
-def _looks_like_ticket_id(q: str) -> bool:
-    return bool(_TICKET_RE.match(q or ""))
-
-
-def _norm_ticket_id(q: str) -> str:
-    q = (q or "").strip().upper()
-    if q.startswith("R-") is False and q.startswith("R"):
-        q = "R-" + q[1:]
-    return q
+_ITEM_PATTERNS = [
+    r"\bitem(?:_number)?\s*:\s*([A-Za-z0-9][A-Za-z0-9\-/]*[A-Za-z0-9])\b",
+    r"\bitem\s+no\.?\s*:\s*([A-Za-z0-9][A-Za-z0-9\-/]*[A-Za-z0-9])\b",
+    r"\bitem\s+([0-9]{3,}(?:[-/][A-Za-z0-9]+)*)\b",
+    r"\b([0-9]{3}-[0-9]{3,})\b",
+    r"\b([0-9]{3,}-[A-Za-z]{1,4}[0-9]{2,})\b",
+    r"\b([0-9]{7})\b",
+]
 
 
-def _summarize_ticket_rows(
-    rows: list[dict], max_events: int
-) -> tuple[dict | None, list[dict]]:
-    """
-    Pick ONE best summary (prefer chunk_type == summary), then top N non-summary events.
-    rows should already be normalized dicts from store._row_to_dict()
-    """
-    snippets = []
-    for r in rows:
-        kind = normalize_chunk_type(r)
-        text = r.get("text") or ""
-        meta = r.get("metadata") or {}
-        snippets.append(
-            {
-                "text": text,
-                "chunk_type": kind,
-                "metadata": meta,
-                "score": 1.0,
-            }
-        )
+def extract_invoice_ids(text: str) -> set[str]:
+    text = text or ""
+    matches: set[str] = set()
+    for value in re.findall(r"\binvoice:\s*([^\s|]+)", text, flags=re.IGNORECASE):
+        v = value.strip().strip(",.;:[](){}")
+        if v:
+            matches.add(v.upper())
+    for value in re.findall(r"\bINV\d{7,12}\b", text, flags=re.IGNORECASE):
+        matches.add(value.upper())
+    return matches
 
-    summaries = [
-        s for s in snippets if s["chunk_type"] == "summary" and (s["text"] or "").strip()
-    ]
-    best_summary = summaries[0] if summaries else (snippets[0] if snippets else None)
 
-    events = [
-        s for s in snippets if s["chunk_type"] != "summary" and (s["text"] or "").strip()
-    ]
-    events = events[: max(0, int(max_events))]
-
-    return best_summary, events
+def extract_item_numbers(text: str) -> set[str]:
+    text = text or ""
+    found: set[str] = set()
+    for pat in _ITEM_PATTERNS:
+        for m in re.findall(pat, text, flags=re.IGNORECASE):
+            val = (m or "").strip().strip(",.;:()[]{}")
+            if not val:
+                continue
+            val = re.sub(r"\s+", "", val).upper()
+            if val.startswith("INV"):
+                continue
+            found.add(val)
+    return found
 
 
 def _now_utc() -> datetime:
@@ -741,18 +719,6 @@ def enrich_next_action(result: Dict[str, Any]) -> Dict[str, Any]:
     return result
 
 
-class RagSearchRequest(BaseModel):
-    query: str
-    top_k: int = 25
-    min_score: Optional[float] = None
-    only_chunk_type: Optional[list[str]] = None
-    status_contains: Optional[str] = None
-    reason_contains: Optional[str] = None
-    customer: Optional[str] = None
-    invoice: Optional[str] = None
-    max_events: int = 4
-
-
 router = APIRouter()
 
 class TicketRefsResponse(BaseModel):
@@ -767,6 +733,34 @@ class NextActionTraceRequest(BaseModel):
     reason_for_credit: Optional[str] = None
     investigation_note_body: Optional[str] = None
     metadata: Optional[Dict[str, Any]] = None
+
+
+class NewDesignSearchRequest(BaseModel):
+    query: str
+    top_k: int = 5
+    refresh: bool = False
+
+
+class NewDesignAnswerRequest(BaseModel):
+    query: str
+    top_k: int = 10
+    max_tickets_in_answer: int = 5
+    refresh: bool = False
+
+
+class NewDesignRefreshRequest(BaseModel):
+    index: bool = False
+
+
+class NewDesignItemAnalysisRequest(BaseModel):
+    item_number: str
+    refresh: bool = False
+
+
+class NewDesignTicketAnalysisRequest(BaseModel):
+    ticket_id: str
+    threshold_days: int = 30
+    refresh: bool = False
 
 
 @router.get("/rag/health")
@@ -786,12 +780,11 @@ def rag_health() -> dict[str, Any]:
 
 
 @router.post("/rag/search")
-def rag_search(payload: RagSearchRequest) -> dict[str, Any]:
-    try:
-        return _rag_search_impl(payload)
-    except Exception as exc:
-        traceback.print_exc()
-        raise HTTPException(status_code=500, detail=f"{type(exc).__name__}: {exc}")
+def rag_search() -> dict[str, Any]:
+    raise HTTPException(
+        status_code=410,
+        detail="Legacy /rag/search was removed. Use /rag/new/search.",
+    )
 
 
 @router.get("/rag/ticket/{ticket_id}/refs", response_model=TicketRefsResponse)
@@ -881,292 +874,83 @@ def rag_next_action_trace(payload: NextActionTraceRequest) -> dict[str, Any]:
     }
 
 
-def _rag_search_impl(payload: RagSearchRequest) -> dict[str, Any]:
-    store = get_rag_store()
+@router.post("/rag/new/search")
+def rag_new_search(payload: NewDesignSearchRequest) -> dict[str, Any]:
     try:
-        query = payload.query or ""
+        service = get_runtime_service(refresh=payload.refresh)
+        return service.search(payload.query, top_k=payload.top_k)
+    except Exception as exc:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"{type(exc).__name__}: {exc}")
 
-        if _looks_like_ticket_id(query):
-            ticket_id = _norm_ticket_id(query)
-            try:
-                rows = store.get_ticket_chunks(ticket_id) or []
-            finally:
-                try:
-                    store.close()
-                except Exception:
-                    pass
 
-            if not rows:
-                return {"results": []}
-
-            best_summary, events = _summarize_ticket_rows(rows, payload.max_events)
-
-            invoice_ids = set()
-            credit_numbers = set()
-            for r in rows:
-                t = (r.get("text") or "")
-                invoice_ids |= extract_invoice_ids(t)
-                credit_numbers.update(_extract_cr_numbers(t))
-                meta = r.get("metadata") or {}
-                if isinstance(meta, dict):
-                    invoice_ids |= _invoice_ids_from_meta(meta)
-                    meta_credit_numbers = meta.get("credit_numbers")
-                    if isinstance(meta_credit_numbers, (list, tuple, set)):
-                        credit_numbers.update(
-                            [str(v).strip().upper() for v in meta_credit_numbers if v]
-                        )
-
-            deduped = []
-            seen = set()
-            for s in ([best_summary] if best_summary else []) + events:
-                if not s:
-                    continue
-                txt = s.get("text") or ""
-                if txt in seen:
-                    continue
-                seen.add(txt)
-                deduped.append({"text": txt, "chunk_type": s.get("chunk_type") or "event"})
-
-            reason = None
-            if best_summary:
-                summary_meta = best_summary.get("metadata") or {}
-                reason = summary_meta.get("reason_for_credit")
-                root_cause = summary_meta.get("root_cause")
-                root_causes_all = summary_meta.get("root_causes_all") or []
-                root_cause_confidence = summary_meta.get("root_cause_confidence")
-                root_cause_score = summary_meta.get("root_cause_score")
-                root_cause_rule_id = summary_meta.get("root_cause_rule_id")
-                root_cause_rule_ids = summary_meta.get("root_cause_rule_ids") or []
-                root_cause_triggers = summary_meta.get("root_cause_triggers")
-                root_cause_ruleset_version = summary_meta.get("root_cause_ruleset_version")
-                root_cause = (best_summary.get("metadata") or {}).get("root_cause")
-
-            return {
-                "results": [
-                    enrich_next_action(
-                        {
-                            "ticket_id": ticket_id,
-                            "score": 1.0,
-                            "reason_for_credit": reason,
-                            "root_cause": root_cause,
-                            "root_causes_all": root_causes_all,
-                            "root_cause_confidence": root_cause_confidence,
-                            "root_cause_score": root_cause_score,
-                            "root_cause_rule_id": root_cause_rule_id,
-                            "root_cause_rule_ids": root_cause_rule_ids,
-                            "root_cause_triggers": root_cause_triggers,
-                            "root_cause_ruleset_version": root_cause_ruleset_version,
-                            "snippets": deduped,
-                            "metadata": {"credit_numbers": sorted(credit_numbers)},
-                            "invoice_count": len(invoice_ids),
-                            "has_multiple_invoices": len(invoice_ids) > 1,
-                            "snippet_count": len(deduped),
-                        }
-                    )
-                ]
-            }
-
-        query = query.strip()
-        if not query:
-            raise HTTPException(status_code=400, detail="Query is required.")
-
-        if not store.has_data():
-            return {"results": []}
-
-        embedding = embed_texts([normalize_text(query)])
-        if embedding.ndim != 2:
-            raise HTTPException(status_code=500, detail="Query embedding must be a 2D array.")
-
-        embedding = embedding.astype("float32", copy=False)
-        norms = np.linalg.norm(embedding, axis=1, keepdims=True)
-        norms[norms == 0] = 1.0
-        embedding = embedding / norms
-
-        results = store.search(embedding[0], top_k=payload.top_k)
-        if not results:
-            return {"results": []}
-
-        if payload.min_score is not None:
-            results = [
-                (cid, s)
-                for (cid, s) in results
-                if float(s) >= float(payload.min_score)
-            ]
-            if not results:
-                return {"results": []}
-
-        chunk_ids = [chunk_id for chunk_id, _ in results]
-        rows = store.fetch_chunks(chunk_ids)
-
-        rows_by_id = {row["chunk_id"]: row for row in rows}
-        grouped: dict[str, dict[str, Any]] = {}
-
-        only_types = set(
-            [t.lower().strip() for t in (payload.only_chunk_type or []) if t]
+@router.post("/rag/new/answer")
+def rag_new_answer(payload: NewDesignAnswerRequest) -> dict[str, Any]:
+    try:
+        service = get_runtime_service(refresh=payload.refresh)
+        return service.answer(
+            payload.query,
+            top_k=payload.top_k,
+            max_tickets_in_answer=payload.max_tickets_in_answer,
         )
-        f_status = normalize_text(payload.status_contains) if payload.status_contains else None
-        f_reason = normalize_text(payload.reason_contains) if payload.reason_contains else None
-        f_customer = normalize_text(payload.customer) if payload.customer else None
-        f_invoice = normalize_text(payload.invoice) if payload.invoice else None
+    except Exception as exc:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"{type(exc).__name__}: {exc}")
 
-        def _passes_filters(row: dict[str, Any]) -> bool:
-            text_raw = row.get("text") or ""
-            text = normalize_text(text_raw)
-            kind = normalize_chunk_type(row)
 
-            if only_types and kind not in only_types:
-                return False
+@router.post("/rag/new/refresh")
+def rag_new_refresh(payload: Optional[NewDesignRefreshRequest] = None) -> dict[str, Any]:
+    try:
+        request_payload = payload or NewDesignRefreshRequest()
+        service = get_runtime_service(refresh=False)
+        refresh_info = service.refresh_from_firebase()
 
-            extracted_customer = extract_customer(text_raw)
-            extracted_customer_norm = normalize_text(extracted_customer or "")
+        response: dict[str, Any] = {
+            "refreshed": True,
+            "ready": service.is_ready,
+            "chunk_count": service.chunk_count,
+            "refresh_info": refresh_info,
+        }
 
-            invoice_ids = extract_invoice_ids(text_raw)
-            invoice_match = (
-                any(f_invoice in normalize_text(value) for value in invoice_ids)
-                if f_invoice
-                else True
-            )
+        if request_payload.index:
+            response["index_info"] = service.index_current()
 
-            if f_reason and f_reason not in text:
-                return False
-            if f_customer and f_customer not in extracted_customer_norm and f_customer not in text:
-                return False
-            if f_invoice and not invoice_match and f_invoice not in text:
-                return False
-            if f_status and f_status not in text:
-                return False
-            return True
+        return response
+    except Exception as exc:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"{type(exc).__name__}: {exc}")
 
-        for chunk_id, score in results:
-            row = rows_by_id.get(chunk_id)
-            if not row:
-                continue
-            if not _passes_filters(row):
-                continue
-            metadata = row.get("metadata") or {}
-            ticket_id = row.get("ticket_id") or metadata.get("ticket_id")
-            if not ticket_id:
-                continue
 
-            group = grouped.get(ticket_id)
-            if not group:
-                group = {
-                    "ticket_id": ticket_id,
-                    "score": float(score),
-                    "reason_for_credit": metadata.get("reason_for_credit"),
-                    "best_summary": None,
-                    "best_overall": None,
-                    "event_snippets": [],
-                    "snippets": [],
-                    "_all_rows": [],
-                }
-                grouped[ticket_id] = group
-            else:
-                group["score"] = max(float(group["score"]), float(score))
+@router.post("/rag/new/item-analysis")
+def rag_new_item_analysis(payload: NewDesignItemAnalysisRequest) -> dict[str, Any]:
+    try:
+        item_number = (payload.item_number or "").strip()
+        if not item_number:
+            raise HTTPException(status_code=400, detail="item_number is required.")
+        service = get_runtime_service(refresh=payload.refresh)
+        return service.analyze_item(item_number)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"{type(exc).__name__}: {exc}")
 
-            group["_all_rows"].append({"text": row.get("text"), "metadata": metadata})
 
-            kind = normalize_chunk_type(row)
-            snippet = {
-                "text": row.get("text"),
-                "chunk_type": kind,
-                "score": float(score),
-                "metadata": metadata,
-            }
+@router.post("/rag/new/ticket-analysis")
+def rag_new_ticket_analysis(payload: NewDesignTicketAnalysisRequest) -> dict[str, Any]:
+    try:
+        ticket_id = (payload.ticket_id or "").strip()
+        if not ticket_id:
+            raise HTTPException(status_code=400, detail="ticket_id is required.")
 
-            best_overall = group["best_overall"]
-            if best_overall is None or snippet["score"] > best_overall["score"]:
-                group["best_overall"] = snippet
+        threshold_days = int(payload.threshold_days or 30)
+        if threshold_days <= 0:
+            raise HTTPException(status_code=400, detail="threshold_days must be > 0.")
 
-            if kind == "summary":
-                cur = group["best_summary"]
-                if (cur is None) or (snippet["score"] > cur["score"]):
-                    group["best_summary"] = snippet
-            else:
-                group["event_snippets"].append(snippet)
-
-        max_events = max(0, int(payload.max_events))
-        finalized = []
-        for group in grouped.values():
-            best_summary = group["best_summary"] or group["best_overall"]
-            events_sorted = sorted(
-                group["event_snippets"], key=lambda x: x["score"], reverse=True
-            )[:max_events]
-
-            snippets = []
-            if best_summary:
-                snippets.append(
-                    {"text": best_summary["text"], "chunk_type": best_summary["chunk_type"]}
-                )
-                group["score"] = float(best_summary["score"])
-                summary_meta = best_summary.get("metadata", {})
-                group["reason_for_credit"] = summary_meta.get("reason_for_credit")
-                group["root_cause"] = summary_meta.get("root_cause")
-                group["root_causes_all"] = summary_meta.get("root_causes_all") or []
-                group["root_cause_confidence"] = summary_meta.get("root_cause_confidence")
-                group["root_cause_score"] = summary_meta.get("root_cause_score")
-                group["root_cause_rule_id"] = summary_meta.get("root_cause_rule_id")
-                group["root_cause_rule_ids"] = summary_meta.get("root_cause_rule_ids") or []
-                group["root_cause_triggers"] = summary_meta.get("root_cause_triggers")
-                group["root_cause_ruleset_version"] = summary_meta.get("root_cause_ruleset_version")
-
-            snippets.extend(
-                [{"text": e["text"], "chunk_type": e["chunk_type"]} for e in events_sorted]
-            )
-
-            deduped = []
-            seen_text = set()
-            for snippet in snippets:
-                text = snippet.get("text") or ""
-                if text in seen_text:
-                    continue
-                seen_text.add(text)
-                deduped.append(snippet)
-
-            invoice_ids = set()
-            credit_numbers = set()
-
-            all_rows = group.get("_all_rows") or []
-            for r in all_rows:
-                t = (r.get("text") or r.get("chunk_text") or "")
-                invoice_ids |= extract_invoice_ids(t)
-                credit_numbers.update(_extract_cr_numbers(t))
-
-                meta = r.get("metadata") or {}
-                if isinstance(meta, dict):
-                    invoice_ids |= _invoice_ids_from_meta(meta)
-                    meta_credit_numbers = meta.get("credit_numbers")
-                    if isinstance(meta_credit_numbers, (list, tuple, set)):
-                        credit_numbers.update(
-                            [str(v).strip().upper() for v in meta_credit_numbers if v]
-                        )
-
-            if not invoice_ids:
-                for s in (group.get("snippets") or []):
-                    invoice_ids |= extract_invoice_ids(s.get("text") or "")
-
-            if not credit_numbers:
-                for s in (group.get("snippets") or []):
-                    credit_numbers.update(_extract_cr_numbers(s.get("text") or ""))
-
-            group["invoice_count"] = len(invoice_ids)
-            group["has_multiple_invoices"] = group["invoice_count"] > 1
-            group["snippet_count"] = len(deduped)
-            group["snippets"] = deduped
-            group["metadata"] = {"credit_numbers": sorted(credit_numbers)}
-
-            group.pop("best_summary", None)
-            group.pop("best_overall", None)
-            group.pop("event_snippets", None)
-            group.pop("_all_rows", None)
-            finalized.append(group)
-
-        sorted_results = sorted(finalized, key=lambda item: item["score"], reverse=True)
-        for result in sorted_results:
-            enrich_next_action(result)
-        return {"results": sorted_results}
-    finally:
-        try:
-            store.close()
-        except Exception:
-            pass
+        service = get_runtime_service(refresh=payload.refresh)
+        return service.analyze_ticket(ticket_id=ticket_id, threshold_days=threshold_days)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"{type(exc).__name__}: {exc}")

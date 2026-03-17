@@ -28,13 +28,25 @@ from actus.intents.credit_ops_snapshot import intent_credit_ops_snapshot, INTENT
 from actus.intents.credit_amount_plot import intent_credit_amount_plot, INTENT_ALIASES as CREDIT_AMOUNT_PLOT_ALIASES
 from actus.intents.credit_root_causes import intent_root_cause_summary, INTENT_ALIASES as CREDIT_ROOT_CAUSES_ALIASES
 from actus.intents.bulk_search import intent_bulk_search, INTENT_ALIASES as BULK_SEARCH_ALIASES
+from actus.intents.ticket_analysis import intent_ticket_analysis, INTENT_ALIASES as TICKET_ANALYSIS_ALIASES
+from actus.intents.item_analysis import intent_item_analysis, INTENT_ALIASES as ITEM_ANALYSIS_ALIASES
 from actus.help_text import HELP_TEXT
 from actus.openrouter_client import openrouter_chat
+
+DEFAULT_OPENROUTER_FALLBACK_MODEL = "google/gemini-3.1-flash-lite-preview"
+
+
+def _fallback_model_name() -> str:
+    value = os.environ.get("ACTUS_OPENROUTER_MODEL_FALLBACK", "").strip()
+    return value or DEFAULT_OPENROUTER_FALLBACK_MODEL
+
 
 # --------------------------------------------------
 # INTENT LIST
 # --------------------------------------------------
 INTENTS: List[Callable[[str, pd.DataFrame], Optional[Tuple[str, Optional[pd.DataFrame]]]]] = [
+    intent_item_analysis,
+    intent_ticket_analysis,
     intent_ticket_status,
     intent_ticket_requests,    # NEW — returns (text, df)
     intent_bulk_search,
@@ -60,6 +72,8 @@ INTENTS: List[Callable[[str, pd.DataFrame], Optional[Tuple[str, Optional[pd.Data
 ]
 
 INTENT_DEFS = [
+    {"id": "item_analysis", "label": "Analyze item", "prefix": "analyze item", "func": intent_item_analysis, "aliases": ITEM_ANALYSIS_ALIASES},
+    {"id": "ticket_analysis", "label": "Analyze ticket", "prefix": "analyze ticket", "func": intent_ticket_analysis, "aliases": TICKET_ANALYSIS_ALIASES},
     {"id": "ticket_status", "label": "Ticket status", "prefix": "ticket status", "func": intent_ticket_status, "aliases": TICKET_STATUS_ALIASES},
     {"id": "ticket_requests", "label": "Ticket requests", "prefix": "ticket requests", "func": intent_ticket_requests, "aliases": TICKET_REQUESTS_ALIASES},
     {"id": "bulk_search", "label": "Bulk search", "prefix": "bulk search", "func": intent_bulk_search, "aliases": BULK_SEARCH_ALIASES},
@@ -129,7 +143,7 @@ def _classify_intent_openrouter(query: str):
     enabled = os.environ.get("ACTUS_INTENT_CLASSIFIER", "").strip().lower() in {"1", "true", "yes"}
     if not enabled:
         return None
-    fallback_model = os.environ.get("ACTUS_OPENROUTER_MODEL_FALLBACK")
+    fallback_model = _fallback_model_name()
     catalog = [
         {"id": item["id"], "label": item["label"]}
         for item in INTENT_DEFS
@@ -183,7 +197,7 @@ def _suggest_intents_openrouter(query: str):
     enabled = os.environ.get("ACTUS_INTENT_CLASSIFIER", "").strip().lower() in {"1", "true", "yes"}
     if not enabled:
         return []
-    fallback_model = os.environ.get("ACTUS_OPENROUTER_MODEL_FALLBACK")
+    fallback_model = _fallback_model_name()
     catalog = [{"id": item["id"], "label": item["label"]} for item in INTENT_DEFS]
     system_prompt = (
         "You are an intent suggester. Return ONLY JSON as a list of up to 3 objects "
@@ -252,13 +266,15 @@ def actus_answer(query: str, df: pd.DataFrame) -> Tuple[str, Optional[pd.DataFra
         return (HELP_TEXT, None, {"is_help": True})
 
     normalized = _normalize_query(q_low)
-    if any(term in normalized for term in ["plot", "chart", "graph"]) and "credit" not in normalized:
-        return (
-            "What date range should I use for the credit amount chart? "
-            "Try: today, yesterday, last 7 days, last month, or a custom range.",
-            None,
-            {"follow_up": {"intent": "credit_amount_plot", "prefix": "credit amount chart"}},
-        )
+    if any(term in normalized for term in ["plot", "chart", "graph"]):
+        plot_result = intent_credit_amount_plot(query, df)
+        if plot_result is not None:
+            if isinstance(plot_result, str):
+                return (plot_result, None, {})
+            if isinstance(plot_result, tuple) and len(plot_result) == 2:
+                return (plot_result[0], plot_result[1], {})
+            if isinstance(plot_result, tuple) and len(plot_result) == 3:
+                return plot_result
 
     if any(phrase in normalized for phrase in ["what day is today", "what day is it", "what is today", "today's date", "todays date"]):
         today = datetime.now().strftime("%A, %B %d, %Y")

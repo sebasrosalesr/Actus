@@ -1,0 +1,106 @@
+[
+  {
+    "id": "ppd_mismatch",
+    "label": "Item should be PPD",
+    "priority": 90,
+    "threshold": 1,
+    "keywords": [
+      "ppd",
+      "non-ppd",
+      "ppd formulary",
+      "part of the ppd",
+      "should have been sent as ppd",
+      "should be ppd"
+    ],
+    "negative_keywords": ["non ppd confirmed", "not ppd"]
+  },
+  {
+    "id": "sub_price_mismatch",
+    "label": "Item not price matched when subbing",
+    "priority": 70,
+    "threshold": 1,
+    "keywords": [
+      "sub was not price matched",
+      "sub not price matched",
+      "not price matched",
+      "subbed",
+      "subbing",
+      "substitute",
+      "substitution",
+      "price match",
+      "should have been matched"
+    ]
+  },
+  {
+    "id": "freight_error",
+    "label": "Freight should not have been charged",
+    "priority": 60,
+    "threshold": 1,
+    "keywords": [
+      "freight",
+      "shipping",
+      "handling",
+      "delivery",
+      "should not have been charged"
+    ]
+  },
+  {
+    "id": "post_change_invoice",
+    "label": "Item invoiced after price change",
+    "priority": 50,
+    "threshold": 2,
+    "keywords": [
+      "price change",
+      "after price",
+      "invoiced after",
+      "effective date",
+      "updated on"
+    ]
+  },
+  {
+    "id": "price_loaded_after_invoice",
+    "label": "Price Loaded After Invoice",
+    "priority": 75,
+    "threshold": 1,
+    "keywords": [
+      "price loaded after invoice",
+      "loaded after invoice",
+      "price updated after invoice",
+      "price changed after invoice",
+      "price loaded after order",
+      "loaded after order",
+      "order placed before price loaded",
+      "invoice created before price loaded",
+      "after invoice date",
+      "after order date",
+      "billed before updated pricing",
+      "at the time the order was placed is incorrect",
+      "pricing not correct on invoice but correct in v2",
+      "updated to contract pricing on",
+      "was updated to correct pricing on",
+      "item was added on",
+      "pricing has been updated"
+    ]
+  },
+  {
+    "id": "price_discrepancy",
+    "label": "Price discrepancy",
+    "priority": 40,
+    "threshold": 1,
+    "keywords": [
+      "wrong price",
+      "priced wrong",
+      "pricing error",
+      "priced incorrectly",
+      "incorrect amount",
+      "discrepanc"
+    ],
+    "negative_keywords": [
+      "not a pricing discrepancy",
+      "not pricing discrepancy",
+      "not a price discrepancy",
+      "not incorrect pricing",
+      "price correctly reflects"
+    ]
+  }
+]

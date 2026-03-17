@@ -5,6 +5,7 @@ import remarkGfm from 'remark-gfm';
 import Mockup from './Mockup';
 import RootCauses, { type RootCauseItem } from './RootCauses';
 import { RagResults } from './RagResults';
+import { Analysis, ItemAnalysis, type TicketAnalysisMeta, type ItemAnalysisMeta } from './Analysis';
 
 type ActusChatProps = {
     userEmail?: string;
@@ -52,9 +53,13 @@ export default function ActusChat({ userEmail, onLogout }: ActusChatProps) {
         withoutCrUsd: number | null;
     };
 
+
+
     type NoteSummary = {
         bullets: string[];
         disclaimer?: string;
+        source?: string;
+        model?: string;
     };
 
     type Message = {
@@ -102,6 +107,8 @@ export default function ActusChat({ userEmail, onLogout }: ActusChatProps) {
                     trend_usd: number;
                 }>;
             };
+            ticket_analysis?: TicketAnalysisMeta;
+            item_analysis?: ItemAnalysisMeta;
         };
     };
 
@@ -391,6 +398,7 @@ export default function ActusChat({ userEmail, onLogout }: ActusChatProps) {
         }).format(value);
     };
 
+
     const renderChartPlaceholder = (label: string) => (
         <div className="flex items-center justify-center h-full text-sm text-slate-400 bg-slate-950/40 border border-white/5 rounded-lg">
             {label}
@@ -615,11 +623,21 @@ export default function ActusChat({ userEmail, onLogout }: ActusChatProps) {
     const [pendingFollowup, setPendingFollowup] = useState<{ intent: string; prefix: string } | null>(null);
     const [pendingChoices, setPendingChoices] = useState<Array<{ label: string; prefix: string }> | null>(null);
 
-    const sendMessage = async (messageText: string, options?: { showUser?: boolean }) => {
+    const sendMessage = async (
+        messageText: string,
+        options?: { showUser?: boolean; bypassPending?: boolean },
+    ) => {
         const trimmed = messageText.trim();
         if (!trimmed || isTyping) return;
-        const shouldUseFollowup = pendingFollowup && !/^cancel|never mind|nevermind$/i.test(trimmed);
-        const choiceMatch = pendingChoices && /^\d$/.test(trimmed) ? Number(trimmed) : null;
+        const bypassPending = Boolean(options?.bypassPending);
+        const shouldUseFollowup =
+            !bypassPending
+            && pendingFollowup
+            && !/^cancel|never mind|nevermind$/i.test(trimmed);
+        const choiceMatch =
+            !bypassPending && pendingChoices && /^\d$/.test(trimmed)
+                ? Number(trimmed)
+                : null;
         const resolvedMessage = choiceMatch && pendingChoices && pendingChoices[choiceMatch - 1]
             ? pendingChoices[choiceMatch - 1].prefix
             : shouldUseFollowup
@@ -629,6 +647,10 @@ export default function ActusChat({ userEmail, onLogout }: ActusChatProps) {
             setPendingFollowup(null);
         }
         if (choiceMatch) {
+            setPendingChoices(null);
+        }
+        if (bypassPending) {
+            setPendingFollowup(null);
             setPendingChoices(null);
         }
 
@@ -740,7 +762,7 @@ export default function ActusChat({ userEmail, onLogout }: ActusChatProps) {
             event.preventDefault();
             const raw = href.replace('actus://ask/', '');
             const decoded = decodeURIComponent(raw);
-            sendMessage(decoded, { showUser: false });
+            sendMessage(decoded, { showUser: false, bypassPending: true });
         }
     };
 
@@ -754,10 +776,10 @@ export default function ActusChat({ userEmail, onLogout }: ActusChatProps) {
     return (
         <div className="flex flex-col h-screen bg-obsidian-950 text-slate-100 overflow-hidden font-sans selection:bg-cyan-500/30">
             {/* Animated background elements */}
-            <div className="fixed inset-0 overflow-hidden pointer-events-none">
-                <div className="absolute top-[-10%] left-[-10%] w-[50%] h-[50%] bg-cyan-500/05 rounded-full blur-[120px] animate-pulse-slow"></div>
-                <div className="absolute bottom-[-10%] right-[-10%] w-[50%] h-[50%] bg-indigo-500/05 rounded-full blur-[120px] animate-pulse-slow" style={{ animationDelay: '2s' }}></div>
-                <div className="absolute top-[20%] left-[20%] w-[40%] h-[40%] bg-violet-500/05 rounded-full blur-[100px] animate-float opacity-50"></div>
+            <div className="fixed inset-0 overflow-hidden pointer-events-none -z-0">
+                <div className="absolute top-[10%] left-[-5%] w-[600px] h-[600px] bg-indigo-900/10 rounded-full blur-[120px] animate-pulse-slow"></div>
+                <div className="absolute bottom-[10%] right-[-5%] w-[500px] h-[500px] bg-cyan-900/10 rounded-full blur-[100px] animate-float" style={{ animationDelay: '2s' }}></div>
+                <div className="absolute top-[40%] left-[60%] w-[400px] h-[400px] bg-violet-900/10 rounded-full blur-[100px] animate-pulse-slow opacity-50"></div>
             </div>
 
             {/* Header */}
@@ -843,7 +865,7 @@ export default function ActusChat({ userEmail, onLogout }: ActusChatProps) {
                                 {suggestedIntents.map((intent) => (
                                     <button
                                         key={intent.label}
-                                        onClick={() => sendMessage(intent.scope ? `${intent.label} (${intent.scope})` : intent.label, { showUser: true })}
+                                        onClick={() => sendMessage(intent.scope ? `${intent.label} (${intent.scope})` : intent.label, { showUser: true, bypassPending: true })}
                                         className="w-full text-left p-3.5 rounded-xl hover:bg-gradient-to-r hover:from-white/[0.07] hover:to-transparent border border-transparent hover:border-white/[0.05] transition-all group flex items-start gap-3"
                                     >
                                         <Sparkles className="w-4 h-4 text-slate-600 group-hover:text-cyan-400 transition-colors mt-0.5" />
@@ -874,7 +896,7 @@ export default function ActusChat({ userEmail, onLogout }: ActusChatProps) {
                                     recentIntents.map((intent, index) => (
                                         <button
                                             key={`${intent}-${index}`}
-                                            onClick={() => sendMessage(intent, { showUser: true })}
+                                            onClick={() => sendMessage(intent, { showUser: true, bypassPending: true })}
                                             className="w-full text-left p-3.5 rounded-xl hover:bg-gradient-to-r hover:from-white/[0.07] hover:to-transparent border border-transparent hover:border-white/[0.05] transition-all group flex items-center gap-3"
                                         >
                                             <div className="w-1.5 h-1.5 rounded-full bg-slate-700 group-hover:bg-indigo-400 transition-colors"></div>
@@ -948,21 +970,19 @@ export default function ActusChat({ userEmail, onLogout }: ActusChatProps) {
                                     })();
 
                                     return (
-                                        <h1 className="text-5xl md:text-6xl font-bold font-display tracking-tight text-center mb-6 flex flex-col md:block items-center justify-center gap-2">
+                                        <h1 className="text-5xl md:text-6xl font-bold font-display tracking-tight text-center mb-8 flex flex-col items-center justify-center gap-3">
                                             <span className="bg-gradient-to-r from-white via-slate-200 to-slate-500 bg-clip-text text-transparent drop-shadow-sm">
-                                                {timeGreeting}
+                                                {timeGreeting},
                                             </span>
                                             {displayName ? (
                                                 <span
                                                     key={displayName}
-                                                    className="inline-block md:ml-3 bg-gradient-to-r from-cyan-200 via-cyan-400 to-indigo-400 bg-clip-text text-transparent opacity-0 animate-[fadeInUp_0.8s_ease-out_0.5s_forwards]"
+                                                    className="bg-gradient-to-r from-cyan-200 via-cyan-300 to-indigo-400 bg-clip-text text-transparent opacity-0 animate-[fadeInUp_0.8s_ease-out_0.2s_forwards] drop-shadow-sm"
                                                 >
-                                                    , {displayName}
+                                                    {displayName}
                                                 </span>
                                             ) : (
-                                                <span className="inline-flex items-center ml-3 align-middle">
-                                                    <span className="h-4 w-24 rounded-full bg-white/5 animate-pulse"></span>
-                                                </span>
+                                                <span className="h-10 md:h-14 w-64 rounded-full bg-white/5 animate-pulse"></span>
                                             )}
                                         </h1>
                                     );
@@ -979,7 +999,7 @@ export default function ActusChat({ userEmail, onLogout }: ActusChatProps) {
                                     ].map((item, idx) => (
                                         <button
                                             key={idx}
-                                            onClick={() => sendMessage(item.cmd, { showUser: true })}
+                                            onClick={() => sendMessage(item.cmd, { showUser: true, bypassPending: true })}
                                             className="flex flex-col items-start gap-4 p-5 rounded-2xl bg-white/[0.03] border border-white/[0.06] hover:bg-white/[0.08] hover:border-cyan-500/30 transition-all duration-300 group/card text-left relative overflow-hidden"
                                         >
                                             <div className="absolute top-0 right-0 p-4 opacity-0 group-hover/card:opacity-100 transition-opacity transform translate-x-2 group-hover/card:translate-x-0">
@@ -1000,6 +1020,14 @@ export default function ActusChat({ userEmail, onLogout }: ActusChatProps) {
 
                         {messages.map((message, idx) => {
                             const noteSummary = message.meta?.note_summary;
+                            const noteSummarySource = String(noteSummary?.source || '').trim();
+                            const noteSummaryModel = String(noteSummary?.model || '').trim();
+                            const noteSummarySourceLabel =
+                                noteSummarySource === 'openrouter_primary'
+                                    ? 'OpenRouter'
+                                    : noteSummarySource === 'openrouter_fallback'
+                                        ? 'OpenRouter (fallback)'
+                                        : '';
                             const isNoteExpanded = expandedNoteIds[message.id] ?? false;
                             const noteContent = message.content ?? '';
                             const noteSplit = splitInvestigationNote(noteContent);
@@ -1031,9 +1059,16 @@ export default function ActusChat({ userEmail, onLogout }: ActusChatProps) {
                                                         {noteSummary.disclaimer || 'Generated by LLM'}
                                                     </div>
                                                 </div>
-                                                <span className="text-[10px] font-semibold uppercase tracking-[0.2em] text-emerald-300/60">
-                                                    Snapshot
-                                                </span>
+                                                <div className="flex flex-col items-end gap-1">
+                                                    <span className="text-[10px] font-semibold uppercase tracking-[0.2em] text-emerald-300/60">
+                                                        Snapshot
+                                                    </span>
+                                                    {noteSummarySourceLabel && (
+                                                        <span className="text-[10px] text-emerald-200/70 font-mono px-2 py-0.5 rounded bg-white/[0.04] border border-white/[0.08]">
+                                                            {noteSummarySourceLabel}{noteSummaryModel ? ` · ${noteSummaryModel}` : ''}
+                                                        </span>
+                                                    )}
+                                                </div>
                                             </div>
                                             <ul className="mt-3 space-y-2 text-sm text-emerald-100">
                                                 {noteSummary.bullets.map((bullet, index) => (
@@ -1049,9 +1084,9 @@ export default function ActusChat({ userEmail, onLogout }: ActusChatProps) {
                                     {/* TEXT CONTENT */}
                                     {!(message.role === 'assistant' && (message.creditTrends || message.meta?.rootCauses)) && Boolean(message.content?.trim()) && (
                                         <div
-                                            className={`p-5 rounded-2xl backdrop-blur-md transition-all duration-300 shadow-xl ${message.role === 'user'
-                                                ? 'bg-gradient-to-br from-cyan-600 to-blue-600 text-white shadow-cyan-900/20 rounded-tr-sm border border-white/10'
-                                                : 'glass-panel text-slate-200 rounded-tl-sm'
+                                            className={`p-5 rounded-3xl backdrop-blur-md transition-all duration-300 shadow-xl ${message.role === 'user'
+                                                ? 'bg-indigo-900/20 text-indigo-50 shadow-indigo-900/20 rounded-tr-sm border border-indigo-500/20'
+                                                : 'bg-transparent text-slate-200 border border-transparent'
                                                 } `}
                                         >
                                             <div className="text-[15px] leading-relaxed font-normal" onClick={handleMessageLinkClick}>
@@ -1066,7 +1101,7 @@ export default function ActusChat({ userEmail, onLogout }: ActusChatProps) {
                                                             ul: ({ children }) => <ul className="list-disc pl-4 mb-3 space-y-1 marker:text-cyan-400">{children}</ul>,
                                                             ol: ({ children }) => <ol className="list-decimal pl-4 mb-3 space-y-1 marker:text-cyan-400">{children}</ol>,
                                                             li: ({ children }) => <li className="text-slate-300 pl-1">{children}</li>,
-                                                            h1: ({ children }) => <h1 className="text-xl font-bold text-white mb-3 mt-1 pb-2 border-b border-white/10 font-display">{children}</h1>,
+                                                            h1: ({ children }) => <h1 className="text-2xl font-bold tracking-tight text-white mb-4 mt-2 pb-2 border-b border-white/[0.08] font-display">{children}</h1>,
                                                             a: ({ href, children }) => {
                                                                 if (href?.startsWith('actus://ask/')) {
                                                                     const raw = href.replace('actus://ask/', '');
@@ -1077,7 +1112,7 @@ export default function ActusChat({ userEmail, onLogout }: ActusChatProps) {
                                                                             role="button"
                                                                             onClick={(event) => {
                                                                                 event.preventDefault();
-                                                                                sendMessage(decoded, { showUser: false });
+                                                                                sendMessage(decoded, { showUser: false, bypassPending: true });
                                                                             }}
                                                                             className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded bg-cyan-500/10 text-cyan-200 border border-cyan-500/20 hover:bg-cyan-500/20 transition-colors"
                                                                             title="Run this request"
@@ -1103,7 +1138,7 @@ export default function ActusChat({ userEmail, onLogout }: ActusChatProps) {
                                                                     return (
                                                                         <button
                                                                             type="button"
-                                                                            onClick={() => sendMessage(command.trim(), { showUser: false })}
+                                                                            onClick={() => sendMessage(command.trim(), { showUser: false, bypassPending: true })}
                                                                             className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-cyan-500/10 text-cyan-200 border border-cyan-500/20 hover:bg-cyan-500/20 transition-all text-xs font-semibold uppercase tracking-wide"
                                                                             title="Open note"
                                                                         >
@@ -1144,10 +1179,12 @@ export default function ActusChat({ userEmail, onLogout }: ActusChatProps) {
 
                                     {/* CREDIT AMOUNT CHART */}
                                     {message.role === 'assistant' && message.meta?.chart?.kind === 'credit_amount_trend' && (
-                                        <div className="w-full max-w-6xl bg-slate-900/50 border border-white/10 rounded-2xl overflow-hidden shadow-2xl backdrop-blur-md p-6">
-                                            <div className="flex items-center gap-2 mb-4">
-                                                <BarChart className="w-5 h-5 text-cyan-400" />
-                                                <h2 className="text-lg font-bold text-white">Credit Amount Trend</h2>
+                                        <div className="w-full max-w-6xl bg-obsidian-950/40 border border-white/[0.08] rounded-3xl overflow-hidden shadow-2xl backdrop-blur-xl p-6 transition-all hover:border-cyan-500/30 text-white">
+                                            <div className="flex items-center gap-3 mb-4">
+                                                <div className="p-2 rounded-xl bg-gradient-to-br from-cyan-500/20 to-blue-600/20 border border-cyan-500/20">
+                                                    <BarChart className="w-5 h-5 text-cyan-400" />
+                                                </div>
+                                                <h2 className="text-2xl font-bold font-display tracking-tight text-white drop-shadow-sm">Credit Amount Trend</h2>
                                             </div>
                                             <div className="text-xs text-slate-400 mb-4">
                                                 Window: {message.meta.chart.window} • Bucketing: {message.meta.chart.bucket}
@@ -1160,46 +1197,66 @@ export default function ActusChat({ userEmail, onLogout }: ActusChatProps) {
 
                                     {/* MIXED LINES SUMMARY CARD */}
                                     {message.role === 'assistant' && message.meta?.mixedLinesSummary && (
-                                        <div className="w-full max-w-4xl bg-slate-900/55 border border-white/10 rounded-2xl overflow-hidden shadow-2xl shadow-slate-900/40 backdrop-blur-md p-6">
-                                            <div className="flex items-center gap-2 mb-5">
-                                                <BarChart className="w-5 h-5 text-emerald-400" />
-                                                <h2 className="text-lg font-bold text-white">Mixed Lines Summary</h2>
+                                        <div className="w-full max-w-4xl bg-obsidian-950/40 border border-white/[0.08] rounded-3xl overflow-hidden shadow-2xl backdrop-blur-xl p-6 md:p-8 transition-all hover:border-emerald-500/30 text-white">
+                                            <div className="flex items-center gap-3 mb-6">
+                                                <div className="p-2 rounded-xl bg-gradient-to-br from-emerald-500/20 to-teal-600/20 border border-emerald-500/20">
+                                                    <BarChart className="w-5 h-5 text-emerald-400" />
+                                                </div>
+                                                <h2 className="text-2xl font-bold font-display tracking-tight text-white drop-shadow-sm">Mixed Lines Summary</h2>
                                             </div>
                                             <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
-                                                <div className="bg-white/5 border border-white/10 rounded-xl p-4">
-                                                    <div className="text-xs text-slate-400 uppercase tracking-wider font-semibold">Mixed Tickets</div>
-                                                    <div className="mt-2 text-2xl font-bold text-white font-display">
+                                                <div className="bg-obsidian-900 border border-white/[0.04] rounded-2xl p-5 hover:bg-obsidian-800 transition-colors">
+                                                    <div className="text-[10px] text-slate-500 uppercase tracking-[0.2em] font-bold">Mixed Tickets</div>
+                                                    <div className="mt-2 text-3xl font-bold text-white font-display tracking-tight">
                                                         {message.meta.mixedLinesSummary.mixedTicketCount.toLocaleString()}
                                                     </div>
                                                 </div>
-                                                <div className="bg-white/5 border border-white/10 rounded-xl p-4">
-                                                    <div className="text-xs text-slate-400 uppercase tracking-wider font-semibold">Without CR Count</div>
-                                                    <div className="mt-2 text-2xl font-bold text-white font-display">
+                                                <div className="bg-obsidian-900 border border-white/[0.04] rounded-2xl p-5 hover:bg-obsidian-800 transition-colors">
+                                                    <div className="text-[10px] text-slate-500 uppercase tracking-[0.2em] font-bold">Without CR Count</div>
+                                                    <div className="mt-2 text-3xl font-bold text-white font-display tracking-tight">
                                                         {message.meta.mixedLinesSummary.withoutCrCount.toLocaleString()}
                                                     </div>
                                                 </div>
-                                                <div className="bg-white/5 border border-white/10 rounded-xl p-4">
-                                                    <div className="text-xs text-slate-400 uppercase tracking-wider font-semibold">Total Credits</div>
-                                                    <div className="mt-2 text-2xl font-bold text-emerald-400 font-display">
+                                                <div className="bg-obsidian-900 border border-emerald-500/20 rounded-2xl p-5 shadow-[0_0_20px_rgba(16,185,129,0.05)]">
+                                                    <div className="text-[10px] text-emerald-500/80 uppercase tracking-[0.2em] font-bold">Total Credits</div>
+                                                    <div className="mt-2 text-3xl font-bold text-emerald-400 font-display tracking-tight">
                                                         {formatCurrency(message.meta.mixedLinesSummary.totalUsd)}
                                                     </div>
                                                 </div>
                                             </div>
                                             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                                                <div className="bg-white/5 border border-white/10 rounded-xl p-4">
-                                                    <div className="text-xs text-slate-400 uppercase tracking-wider font-semibold">With CR Total</div>
-                                                    <div className="mt-2 text-xl font-bold text-cyan-300 font-display">
+                                                <div className="bg-white/[0.02] border border-cyan-500/20 rounded-2xl p-5">
+                                                    <div className="text-[10px] text-cyan-500/80 uppercase tracking-[0.2em] font-bold">With CR Total</div>
+                                                    <div className="mt-2 text-2xl font-bold text-cyan-400 font-display tracking-tight">
                                                         {formatCurrency(message.meta.mixedLinesSummary.withCrUsd)}
                                                     </div>
                                                 </div>
-                                                <div className="bg-white/5 border border-white/10 rounded-xl p-4">
-                                                    <div className="text-xs text-slate-400 uppercase tracking-wider font-semibold">Without CR Total</div>
-                                                    <div className="mt-2 text-xl font-bold text-amber-300 font-display">
+                                                <div className="bg-white/[0.02] border border-amber-500/20 rounded-2xl p-5">
+                                                    <div className="text-[10px] text-amber-500/80 uppercase tracking-[0.2em] font-bold">Without CR Total</div>
+                                                    <div className="mt-2 text-2xl font-bold text-amber-400 font-display tracking-tight">
                                                         {formatCurrency(message.meta.mixedLinesSummary.withoutCrUsd)}
                                                     </div>
                                                 </div>
                                             </div>
                                         </div>
+                                    )}
+
+                                    {/* TICKET ANALYSIS CARD */}
+                                    {message.role === 'assistant' && message.meta?.ticket_analysis && (
+                                        <Analysis
+                                            data={message.meta.ticket_analysis}
+                                            suggestions={message.meta.suggestions}
+                                            onSuggestionClick={(query) => sendMessage(query, { showUser: true, bypassPending: true })}
+                                        />
+                                    )}
+
+                                    {/* ITEM ANALYSIS CARD */}
+                                    {message.role === 'assistant' && message.meta?.item_analysis && (
+                                        <ItemAnalysis
+                                            data={message.meta.item_analysis}
+                                            suggestions={message.meta.suggestions}
+                                            onSuggestionClick={(query) => sendMessage(query, { showUser: true, bypassPending: true })}
+                                        />
                                     )}
 
                                     {/* ROOT CAUSES DASHBOARD */}
@@ -1212,13 +1269,15 @@ export default function ActusChat({ userEmail, onLogout }: ActusChatProps) {
 
                                     {/* DATA CARD (Table + Actions) */}
                                     {message.role === 'assistant' && Array.isArray(message.rows) && message.rows.length > 0 && message.meta?.show_table !== false && (
-                                        <div className="w-full max-w-4xl bg-slate-900/60 border border-white/10 rounded-2xl overflow-hidden shadow-2xl shadow-slate-900/40 backdrop-blur-md">
+                                        <div className="w-full max-w-4xl bg-obsidian-950/40 border border-white/[0.08] rounded-3xl overflow-hidden shadow-2xl backdrop-blur-xl">
                                             {/* Header Bar */}
-                                            <div className="px-5 py-3.5 border-b border-white/10 flex items-center justify-between bg-slate-900/70">
-                                                <div className="flex items-center gap-2 text-sm font-semibold text-slate-100">
-                                                    <TableIcon className="w-4 h-4 text-cyan-400" />
-                                                    <span>Data Preview</span>
-                                                    <span className="text-slate-500 font-normal ml-2">({message.rows.length} rows)</span>
+                                            <div className="px-6 py-4 border-b border-white/[0.04] flex items-center justify-between bg-gradient-to-b from-white/[0.02] to-transparent">
+                                                <div className="flex items-center gap-3 text-sm font-semibold text-white">
+                                                    <div className="w-8 h-8 rounded-lg bg-cyan-500/10 border border-cyan-500/20 flex items-center justify-center text-cyan-400">
+                                                        <TableIcon className="w-4 h-4" />
+                                                    </div>
+                                                    <span className="font-display tracking-wide">Data Preview</span>
+                                                    <span className="text-slate-500 font-normal ml-1 font-mono text-xs">({message.rows.length} rows)</span>
                                                 </div>
 
                                                 {message.meta?.csv_filename && (
@@ -1244,7 +1303,7 @@ export default function ActusChat({ userEmail, onLogout }: ActusChatProps) {
                                                     <thead className="bg-slate-950/80 sticky top-0 z-10">
                                                         <tr>
                                                             {resolveColumns(message.meta).map(col => (
-                                                                <th key={col.key} className="px-4 py-3 text-left text-[11px] font-semibold text-slate-400 uppercase tracking-[0.12em] whitespace-nowrap">
+                                                                <th key={col.key} className="px-6 py-4 text-left text-[10px] font-bold text-slate-500 uppercase tracking-[0.2em] whitespace-nowrap bg-obsidian-950/90 backdrop-blur-md">
                                                                     {col.label}
                                                                 </th>
                                                             ))}
@@ -1298,7 +1357,7 @@ export default function ActusChat({ userEmail, onLogout }: ActusChatProps) {
                                                                     }
 
                                                                     return (
-                                                                        <td key={col.key} className="px-4 py-2.5 text-sm text-slate-300 whitespace-nowrap">
+                                                                        <td key={col.key} className="px-6 py-3.5 text-sm text-slate-300 whitespace-nowrap">
                                                                             {content}
                                                                         </td>
                                                                     );
@@ -1343,25 +1402,25 @@ export default function ActusChat({ userEmail, onLogout }: ActusChatProps) {
             {activeView === 'chat' && (
                 <div className="fixed bottom-0 inset-x-0 bg-transparent p-6 z-50">
                     <div className={`max-w-4xl mx-auto relative transition-all duration-300 ease-out ${isSidebarOpen ? 'mr-[340px]' : 'mx-auto'} `}>
-                        <div className="relative group perspective-[1000px]">
-                            <div className="absolute -inset-0.5 bg-gradient-to-r from-cyan-500/30 via-blue-500/30 to-purple-500/30 rounded-full blur-xl opacity-0 group-hover:opacity-100 transition duration-700 group-hover:duration-200"></div>
-                            <div className="relative flex items-center bg-slate-900/40 backdrop-blur-2xl border border-white/10 rounded-full shadow-2xl overflow-hidden focus-within:ring-2 focus-within:ring-cyan-500/20 focus-within:border-cyan-500/40 transition-all duration-300 transform group-hover:translate-y-[-2px]">
+                        <div className="relative group z-20">
+                            <div className="absolute -inset-1 bg-gradient-to-r from-cyan-500/20 via-blue-500/20 to-purple-500/20 rounded-full blur-md opacity-40 group-hover:opacity-100 transition duration-700"></div>
+                            <div className="relative flex items-center bg-obsidian-950/80 backdrop-blur-2xl border border-white/[0.08] group-hover:border-white/[0.15] rounded-full shadow-2xl overflow-hidden focus-within:ring-1 focus-within:ring-cyan-500/30 focus-within:border-cyan-500/50 transition-all duration-300 transform group-hover:-translate-y-0.5">
                                 <textarea
                                     ref={inputRef}
                                     value={input}
                                     onChange={(e) => setInput(e.target.value)}
                                     onKeyDown={handleKeyPress}
                                     placeholder="Ask Actus anything..."
-                                    className="w-full bg-transparent text-white placeholder-slate-400 px-6 py-4 focus:outline-none resize-none h-[60px] leading-[28px] text-base"
+                                    className="w-full bg-transparent text-slate-100 placeholder-slate-500 px-6 py-4 focus:outline-none resize-none h-[60px] leading-[28px] text-base font-sans"
                                     rows={1}
                                 />
-                                <div className="flex items-center gap-2 pr-3">
+                                <div className="flex items-center gap-2 pr-2">
                                     <button
                                         onClick={handleSend}
                                         disabled={!input.trim() || isTyping}
-                                        className="p-2.5 bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-400 hover:to-blue-500 text-white rounded-xl transition-all disabled:opacity-50 disabled:cursor-not-allowed shadow-glow hover:shadow-glow-lg active:scale-95"
+                                        className="p-3 bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-400 hover:to-blue-500 text-white rounded-full transition-all disabled:opacity-50 disabled:cursor-not-allowed shadow-[0_0_20px_-5px_rgba(6,182,212,0.4)] hover:shadow-[0_0_30px_-5px_rgba(6,182,212,0.6)] active:scale-95"
                                     >
-                                        <Send className="w-5 h-5" />
+                                        <Send className="w-5 h-5 ml-1 mr-1" />
                                     </button>
                                 </div>
                             </div>

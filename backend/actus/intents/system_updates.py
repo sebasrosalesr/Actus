@@ -125,18 +125,24 @@ def intent_system_updates(query: str, df: pd.DataFrame):
         .dt.date.value_counts()
         .sort_index(ascending=False)
     )
-    batch_lines = []
+    batches = []
     for date_value, count in update_counts.items():
         if pd.isna(date_value):
             continue
-        batch_lines.append(f"- Updated on {date_value}: **{count:,}**")
-        if len(batch_lines) >= 10:
-            break
+        batches.append({
+            "date": str(date_value),
+            "count": int(count),
+        })
+    recent_limit = 3
     batch_note = ""
-    if batch_lines:
-        remaining = len(update_counts) - len(batch_lines)
-        suffix = f"\n- (Plus {remaining} earlier batch date(s).)" if remaining > 0 else ""
-        batch_note = "Batch breakdown (by last status date):\n" + "\n".join(batch_lines) + suffix + "\n"
+    if batches:
+        shown = min(recent_limit, len(batches))
+        if len(batches) > recent_limit:
+            batch_note = (
+                f"- Update batches: showing the {shown} most recent of **{len(batches):,}** date(s) below.\n"
+            )
+        else:
+            batch_note = f"- Update batches: showing all **{len(batches):,}** date(s) below.\n"
     message = (
         "System update snapshot — last status updated by the system with RTN/CR present.\n"
         f"- Records found: **{len(filtered):,}**\n"
@@ -152,5 +158,11 @@ def intent_system_updates(query: str, df: pd.DataFrame):
             "csv_rows": filtered,
             "csv_row_count": len(filtered),
             "columns": cols,
+            "system_updates_summary": {
+                "total_records": int(len(filtered)),
+                "total_update_dates": int(len(batches)),
+                "recent_limit": recent_limit,
+                "batches": batches,
+            },
         },
     )

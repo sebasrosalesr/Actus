@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Send, TrendingUp, Sparkles, Zap, MessageSquare, BarChart, X, Menu, Download, Table as TableIcon, LogOut } from 'lucide-react';
+import { Send, TrendingUp, Sparkles, Zap, MessageSquare, BarChart, X, Menu, Download, Table as TableIcon, LogOut, ChevronDown, ChevronUp } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import Mockup from './Mockup';
@@ -63,6 +63,16 @@ export default function ActusChat({ userEmail, onLogout }: ActusChatProps) {
         model?: string;
     };
 
+    type SystemUpdatesSummary = {
+        total_records: number;
+        total_update_dates: number;
+        recent_limit: number;
+        batches: Array<{
+            date: string;
+            count: number;
+        }>;
+    };
+
     type Message = {
         id: string;
         role: 'user' | 'assistant';
@@ -91,6 +101,7 @@ export default function ActusChat({ userEmail, onLogout }: ActusChatProps) {
             creditTrends?: CreditTrendsData;
             mixedLinesSummary?: MixedLinesSummary;
             note_summary?: NoteSummary;
+            system_updates_summary?: SystemUpdatesSummary;
             rootCauses?: {
                 period?: string;
                 data: Array<{
@@ -141,12 +152,19 @@ export default function ActusChat({ userEmail, onLogout }: ActusChatProps) {
     const scrollContainerRef = useRef<HTMLDivElement>(null);
     const inputRef = useRef<HTMLTextAreaElement>(null);
     const [expandedNoteIds, setExpandedNoteIds] = useState<Record<string, boolean>>({});
+    const [expandedSystemUpdateIds, setExpandedSystemUpdateIds] = useState<Record<string, boolean>>({});
 
     const toggleSidebar = () => setIsSidebarOpen(!isSidebarOpen);
     const toggleNoteExpansion = (noteId: string) => {
         setExpandedNoteIds(prev => ({
             ...prev,
             [noteId]: !prev[noteId],
+        }));
+    };
+    const toggleSystemUpdatesExpansion = (messageId: string) => {
+        setExpandedSystemUpdateIds(prev => ({
+            ...prev,
+            [messageId]: !prev[messageId],
         }));
     };
 
@@ -1052,6 +1070,15 @@ export default function ActusChat({ userEmail, onLogout }: ActusChatProps) {
                             const noteSplit = splitInvestigationNote(noteContent);
                             const shouldCollapseNote = Boolean(noteSummary && noteSplit.hasCollapse);
                             const noteDisplayContent = shouldCollapseNote && !isNoteExpanded ? noteSplit.collapsed : noteSplit.full;
+                            const systemUpdatesSummary = message.meta?.system_updates_summary;
+                            const isSystemUpdatesExpanded = expandedSystemUpdateIds[message.id] ?? false;
+                            const visibleSystemBatches = Array.isArray(systemUpdatesSummary?.batches)
+                                ? (
+                                    isSystemUpdatesExpanded
+                                        ? systemUpdatesSummary.batches
+                                        : systemUpdatesSummary.batches.slice(0, Math.max(1, systemUpdatesSummary.recent_limit || 3))
+                                )
+                                : [];
                             const isAnomalyMessage = Boolean(
                                 message.meta?.anomaly_scan
                                 || message.meta?.intent_id === 'credit_anomalies'
@@ -1192,6 +1219,52 @@ export default function ActusChat({ userEmail, onLogout }: ActusChatProps) {
                                         >
                                             {isNoteExpanded ? 'Hide full note' : 'View full note'}
                                         </button>
+                                    )}
+
+                                    {message.role === 'assistant' && systemUpdatesSummary && visibleSystemBatches.length > 0 && (
+                                        <div className="w-full max-w-4xl bg-obsidian-950/40 border border-white/[0.08] rounded-3xl overflow-hidden shadow-2xl backdrop-blur-xl">
+                                            <div className="px-6 py-4 border-b border-white/[0.04] flex items-center justify-between gap-4 bg-gradient-to-b from-white/[0.02] to-transparent">
+                                                <div>
+                                                    <div className="text-[10px] font-bold text-cyan-400 uppercase tracking-[0.2em]">RTN Update Batches</div>
+                                                    <div className="mt-1 text-sm text-slate-300">
+                                                        {isSystemUpdatesExpanded
+                                                            ? `Showing all ${systemUpdatesSummary.total_update_dates.toLocaleString()} update date${systemUpdatesSummary.total_update_dates === 1 ? '' : 's'}`
+                                                            : `Showing ${visibleSystemBatches.length} most recent update date${visibleSystemBatches.length === 1 ? '' : 's'}`}
+                                                    </div>
+                                                </div>
+                                                {systemUpdatesSummary.total_update_dates > visibleSystemBatches.length && (
+                                                    <button
+                                                        type="button"
+                                                        onClick={() => toggleSystemUpdatesExpansion(message.id)}
+                                                        className="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg bg-cyan-500/10 hover:bg-cyan-500/20 border border-cyan-500/20 text-xs font-semibold text-cyan-300 transition-colors"
+                                                    >
+                                                        <ChevronDown className="w-3.5 h-3.5" />
+                                                        Show all {systemUpdatesSummary.total_update_dates.toLocaleString()}
+                                                    </button>
+                                                )}
+                                                {systemUpdatesSummary.total_update_dates <= visibleSystemBatches.length && systemUpdatesSummary.total_update_dates > (systemUpdatesSummary.recent_limit || 3) && (
+                                                    <button
+                                                        type="button"
+                                                        onClick={() => toggleSystemUpdatesExpansion(message.id)}
+                                                        className="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg bg-white/[0.04] hover:bg-white/[0.08] border border-white/[0.08] text-xs font-semibold text-slate-300 transition-colors"
+                                                    >
+                                                        <ChevronUp className="w-3.5 h-3.5" />
+                                                        Show fewer
+                                                    </button>
+                                                )}
+                                            </div>
+                                            <div className="px-6 py-4 space-y-2">
+                                                {visibleSystemBatches.map((batch) => (
+                                                    <div
+                                                        key={`${message.id}-${batch.date}`}
+                                                        className="flex items-center justify-between rounded-2xl border border-white/[0.05] bg-white/[0.02] px-4 py-3"
+                                                    >
+                                                        <span className="text-sm text-slate-300">Updated on {batch.date}</span>
+                                                        <span className="text-sm font-semibold text-white">{batch.count.toLocaleString()}</span>
+                                                    </div>
+                                                ))}
+                                            </div>
+                                        </div>
                                     )}
 
                                     {/* CREDIT TRENDS DASHBOARD */}

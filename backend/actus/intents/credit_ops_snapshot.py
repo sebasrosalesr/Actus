@@ -7,6 +7,7 @@ import pandas as pd
 from dateutil import parser
 
 from app.rag.store import get_rag_store
+from actus.utils.formatting import format_money
 
 INTENT_ALIASES = [
     "credit ops snapshot",
@@ -469,11 +470,41 @@ def intent_credit_ops_snapshot(query: str, df: pd.DataFrame):
     if out.empty:
         return f"I don't see any records in the window ({window_label})."
 
+    credit_totals = pd.to_numeric(out.get("Credit Request Total"), errors="coerce").fillna(0.0)
+    total_credited = format_money(credit_totals.sum())
+
+    root_cause_series = (
+        out.get("Root Causes", pd.Series(index=out.index, dtype="object"))
+        .fillna("")
+        .astype(str)
+        .str.strip()
+    )
+    root_cause_summary = (
+        pd.DataFrame({
+            "root_cause": root_cause_series,
+            "credit_total": credit_totals,
+        })
+        .loc[lambda frame: frame["root_cause"].ne("")]
+        .groupby("root_cause", dropna=False)
+        .agg(
+            credit_total=("credit_total", "sum"),
+            record_count=("root_cause", "size"),
+        )
+        .sort_values(["credit_total", "record_count"], ascending=[False, False])
+    )
+    primary_root_cause = (
+        str(root_cause_summary.index[0])
+        if not root_cause_summary.empty
+        else "Unspecified"
+    )
+
     preview = out.head(200).copy()
     message = "\n".join([
         "Credit ops snapshot:",
         f"- Window used: **{window_label}**",
         f"- Records found: **{len(out):,}**",
+        f"- Total credited: **{total_credited}**",
+        f"- Primary root cause: **{primary_root_cause}**",
         "",
         "Here is a preview of the results.",
     ])

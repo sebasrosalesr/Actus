@@ -26,5 +26,6 @@ HELP_TEXT = (
     "22. Credit ops snapshot — e.g. `Actus, provide the credit ops snapshot between 2025-01-01 and 2025-03-31`\n"
     "23. Credit amount chart — e.g. `Actus, plot credit amounts between 2025-01-01 and 2025-12-31`\n"
     "24. Bulk search — e.g. `Actus, bulk search invoices: 14068709, 14068710` "
+    "or `Actus, bulk lookup item numbers: 009-PCDB1633S, 1007325` "
     "or `Actus, bulk lookup customer numbers: YAM, LUX`\n"
 )

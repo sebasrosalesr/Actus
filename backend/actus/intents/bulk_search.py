@@ -16,6 +16,7 @@ def _norm(series: pd.Series) -> pd.Series:
         .str.strip()
         .str.upper()
         .str.replace(" ", "", regex=False)
+        .str.replace("-", "", regex=False)
     )
 
 

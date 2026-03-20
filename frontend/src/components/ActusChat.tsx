@@ -70,6 +70,8 @@ export default function ActusChat({ userEmail, onLogout }: ActusChatProps) {
         batches: Array<{
             date: string;
             count: number;
+            credit_total: number;
+            credit_total_display: string;
         }>;
     };
 
@@ -1259,7 +1261,10 @@ export default function ActusChat({ userEmail, onLogout }: ActusChatProps) {
                                                         key={`${message.id}-${batch.date}`}
                                                         className="flex items-center justify-between rounded-2xl border border-white/[0.05] bg-white/[0.02] px-4 py-3"
                                                     >
-                                                        <span className="text-sm text-slate-300">Updated on {batch.date}</span>
+                                                        <div className="flex flex-col gap-1">
+                                                            <span className="text-sm text-slate-300">Updated on {batch.date}</span>
+                                                            <span className="text-xs text-slate-500">Total amount {batch.credit_total_display || formatCurrency(batch.credit_total)}</span>
+                                                        </div>
                                                         <span className="text-sm font-semibold text-white">{batch.count.toLocaleString()}</span>
                                                     </div>
                                                 ))}

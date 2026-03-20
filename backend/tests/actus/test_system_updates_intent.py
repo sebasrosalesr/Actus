@@ -14,24 +14,28 @@ class TestSystemUpdatesIntent(unittest.TestCase):
                     "RTN_CR_No": "CR-1",
                     "Date": "2026-03-01",
                     "Ticket Number": "R-1",
+                    "Credit Request Total": 10.0,
                 },
                 {
                     "Status": "[2026-03-18 08:00:00] Updated by the system",
                     "RTN_CR_No": "CR-2",
                     "Date": "2026-03-02",
                     "Ticket Number": "R-2",
+                    "Credit Request Total": 20.0,
                 },
                 {
                     "Status": "[2026-03-17 07:00:00] Updated by the system",
                     "RTN_CR_No": "CR-3",
                     "Date": "2026-03-03",
                     "Ticket Number": "R-3",
+                    "Credit Request Total": 30.0,
                 },
                 {
                     "Status": "[2026-03-16 06:00:00] Updated by the system",
                     "RTN_CR_No": "CR-4",
                     "Date": "2026-03-04",
                     "Ticket Number": "R-4",
+                    "Credit Request Total": 40.0,
                 },
             ]
         )
@@ -51,10 +55,10 @@ class TestSystemUpdatesIntent(unittest.TestCase):
         self.assertEqual(3, summary.get("recent_limit"))
         self.assertEqual(
             [
-                {"date": "2026-03-19", "count": 1},
-                {"date": "2026-03-18", "count": 1},
-                {"date": "2026-03-17", "count": 1},
-                {"date": "2026-03-16", "count": 1},
+                {"date": "2026-03-19", "count": 1, "credit_total": 10.0, "credit_total_display": "$10.00"},
+                {"date": "2026-03-18", "count": 1, "credit_total": 20.0, "credit_total_display": "$20.00"},
+                {"date": "2026-03-17", "count": 1, "credit_total": 30.0, "credit_total_display": "$30.00"},
+                {"date": "2026-03-16", "count": 1, "credit_total": 40.0, "credit_total_display": "$40.00"},
             ],
             summary.get("batches"),
         )

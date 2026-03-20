@@ -2,6 +2,8 @@ import re
 from typing import Optional, Tuple
 import pandas as pd
 
+from actus.utils.formatting import format_money
+
 INTENT_ALIASES = [
     "system updates",
     "system updated",
@@ -94,6 +96,10 @@ def intent_system_updates(query: str, df: pd.DataFrame):
     if filtered.empty:
         return "I don't see any records with a system-updated last status and an RTN/CR number."
 
+    filtered["Credit Request Total"] = pd.to_numeric(
+        filtered.get("Credit Request Total"), errors="coerce"
+    ).fillna(0.0)
+
     if "Date" in filtered.columns:
         filtered["Date"] = pd.to_datetime(filtered["Date"], errors="coerce")
         filtered["Days Since Created"] = (
@@ -102,6 +108,38 @@ def intent_system_updates(query: str, df: pd.DataFrame):
     else:
         filtered["Days Since Created"] = None
 
+    detail_df = filtered.copy()
+    update_counts = (
+        detail_df["Last_Status_Time"]
+        .dt.date.value_counts()
+        .sort_index(ascending=False)
+    )
+    batches = []
+    for date_value, count in update_counts.items():
+        if pd.isna(date_value):
+            continue
+        batch_amount = float(
+            detail_df.loc[
+                detail_df["Last_Status_Time"].dt.date == date_value,
+                "Credit Request Total",
+            ].sum()
+        )
+        batches.append({
+            "date": str(date_value),
+            "count": int(count),
+            "credit_total": batch_amount,
+            "credit_total_display": format_money(batch_amount),
+        })
+    recent_limit = 3
+    batch_note = ""
+    if batches:
+        shown = min(recent_limit, len(batches))
+        if len(batches) > recent_limit:
+            batch_note = (
+                f"- Update batches: showing the {shown} most recent of **{len(batches):,}** date(s) below.\n"
+            )
+        else:
+            batch_note = f"- Update batches: showing all **{len(batches):,}** date(s) below.\n"
     cols = [
         "Date",
         "Ticket Number",
@@ -115,34 +153,10 @@ def intent_system_updates(query: str, df: pd.DataFrame):
         "Status",
     ]
     for col in cols:
-        if col not in filtered.columns:
-            filtered[col] = None
-    filtered = filtered[cols]
-
+        if col not in detail_df.columns:
+            detail_df[col] = None
+    filtered = detail_df[cols]
     preview = filtered.head(200).copy()
-    update_counts = (
-        filtered["Last_Status_Time"]
-        .dt.date.value_counts()
-        .sort_index(ascending=False)
-    )
-    batches = []
-    for date_value, count in update_counts.items():
-        if pd.isna(date_value):
-            continue
-        batches.append({
-            "date": str(date_value),
-            "count": int(count),
-        })
-    recent_limit = 3
-    batch_note = ""
-    if batches:
-        shown = min(recent_limit, len(batches))
-        if len(batches) > recent_limit:
-            batch_note = (
-                f"- Update batches: showing the {shown} most recent of **{len(batches):,}** date(s) below.\n"
-            )
-        else:
-            batch_note = f"- Update batches: showing all **{len(batches):,}** date(s) below.\n"
     message = (
         "System update snapshot — last status updated by the system with RTN/CR present.\n"
         f"- Records found: **{len(filtered):,}**\n"

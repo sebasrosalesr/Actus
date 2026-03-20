@@ -7,10 +7,22 @@ from actus.utils.formatting import format_money
 INTENT_ALIASES = [
     "anomalies",
     "anomaly",
+    "anomaly detection",
+    "anomaly dection",
+    "anomaly scan",
     "unusual credits",
     "suspicious credits",
     "outliers",
 ]
+
+SHORTCUT_ALIASES = (
+    "anomalies",
+    "anomaly",
+    "anomaly detection",
+    "anomaly dection",
+    "anomaly scan",
+    "outliers",
+)
 
 
 def intent_credit_anomalies(query: str, df: pd.DataFrame):
@@ -30,6 +42,8 @@ def intent_credit_anomalies(query: str, df: pd.DataFrame):
     """
 
     q_low = query.lower()
+    normalized = re.sub(r"[^a-z0-9\s]", " ", q_low)
+    normalized = re.sub(r"\s+", " ", normalized).strip()
 
     # Trigger words
     if not (
@@ -41,7 +55,11 @@ def intent_credit_anomalies(query: str, df: pd.DataFrame):
     ):
         return None
 
-    if "credit" not in q_low and "ticket" not in q_low:
+    shortcut_request = len(normalized.split()) <= 4 and any(
+        alias in normalized for alias in SHORTCUT_ALIASES
+    )
+
+    if "credit" not in q_low and "ticket" not in q_low and not shortcut_request:
         # Let other intents try if it's not clearly about credits
         return None
 

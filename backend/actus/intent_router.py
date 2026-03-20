@@ -332,20 +332,22 @@ def actus_answer(query: str, df: pd.DataFrame) -> Tuple[str, Optional[pd.DataFra
     alias_match = _match_intent_alias(query)
     if alias_match:
         result = alias_match["func"](query, df)
-        return _return_with_intent(
-            result,
-            intent_id=alias_match["id"],
-            matched_by="alias",
-        )
+        if result is not None:
+            return _return_with_intent(
+                result,
+                intent_id=alias_match["id"],
+                matched_by="alias",
+            )
 
     classifier_match = _classify_intent_openrouter(query)
     if classifier_match:
         result = classifier_match["func"](query, df)
-        return _return_with_intent(
-            result,
-            intent_id=classifier_match["id"],
-            matched_by="classifier",
-        )
+        if result is not None:
+            return _return_with_intent(
+                result,
+                intent_id=classifier_match["id"],
+                matched_by="classifier",
+            )
 
     for intent in INTENTS:
         result = intent(query, df)

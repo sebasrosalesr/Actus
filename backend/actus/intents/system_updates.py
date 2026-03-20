@@ -146,6 +146,7 @@ def intent_system_updates(query: str, df: pd.DataFrame):
         "Invoice Number",
         "Item Number",
         "Customer Number",
+        "Credit Request Total",
         "RTN_CR_No",
         "Last_Status_Time",
         "Days Since Created",

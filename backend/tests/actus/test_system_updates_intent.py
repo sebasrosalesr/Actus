@@ -47,6 +47,8 @@ class TestSystemUpdatesIntent(unittest.TestCase):
         text, rows, meta = response
         self.assertIn("showing the 3 most recent", text)
         self.assertEqual(4, len(rows))
+        self.assertIn("Credit Request Total", rows.columns)
+        self.assertEqual([10.0, 20.0, 30.0, 40.0], rows["Credit Request Total"].tolist())
         summary = meta.get("system_updates_summary")
         self.assertIsInstance(summary, dict)
         assert isinstance(summary, dict)

@@ -317,6 +317,34 @@ class ActusHybridRAGService:
         investigation_rows = load_investigation_notes()
         return self.load_from_rows(credit_rows, investigation_rows)
 
+    def _refresh_canonical_only_from_firebase(self) -> dict[str, Any]:
+        load_env()
+        credit_rows = load_credit_requests()
+        investigation_rows = load_investigation_notes()
+        artifacts = build_pipeline_artifacts(
+            credit_rows=credit_rows,
+            investigation_rows=investigation_rows,
+            rules_path=self.config.rules_path,
+            fallback_max_chars=self.config.fallback_max_chars,
+        )
+        snapshot_path = save_canonical_tickets(artifacts.canonical_tickets)
+
+        with self._lock:
+            existing_chunks = list(
+                self._catalog_chunks
+                or (self._artifacts.chunks if self._artifacts is not None else artifacts.chunks)
+            )
+            self._artifacts = PipelineArtifacts(
+                ticket_line_map=artifacts.ticket_line_map,
+                canonical_tickets=artifacts.canonical_tickets,
+                chunks=existing_chunks,
+            )
+
+        return {
+            "ticket_count": len(artifacts.canonical_tickets),
+            "snapshot_path": str(snapshot_path),
+        }
+
     def _ensure_canonical_ready(self) -> None:
         with self._lock:
             if self._artifacts is not None:
@@ -548,7 +576,20 @@ class ActusHybridRAGService:
             if self._artifacts is None:
                 raise RuntimeError("Service is not initialized. Call refresh_from_firebase() or load_from_rows() first.")
             canonical_tickets = self._artifacts.canonical_tickets
-        return analyze_ticket_actus(ticket_id, canonical_tickets, threshold_days=threshold_days)
+        analysis = analyze_ticket_actus(ticket_id, canonical_tickets, threshold_days=threshold_days)
+
+        # The live app can keep serving an older canonical snapshot long after Pinecone
+        # has been rebuilt. On a miss, rebuild only the canonical ticket map from Firebase
+        # and retry without recomputing embeddings.
+        if str(analysis.get("answer") or "").endswith("was not found."):
+            self._refresh_canonical_only_from_firebase()
+            with self._lock:
+                if self._artifacts is None:
+                    raise RuntimeError("Service is not initialized. Call refresh_from_firebase() or load_from_rows() first.")
+                canonical_tickets = self._artifacts.canonical_tickets
+            analysis = analyze_ticket_actus(ticket_id, canonical_tickets, threshold_days=threshold_days)
+
+        return analysis
 
 
 _RUNTIME_SERVICE: ActusHybridRAGService | None = None

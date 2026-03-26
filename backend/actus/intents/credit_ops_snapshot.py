@@ -1,14 +1,15 @@
 import re
+from collections import Counter
 from functools import lru_cache
-from zoneinfo import ZoneInfo
 from typing import Optional, Tuple
+from zoneinfo import ZoneInfo
 
 import numpy as np
 import pandas as pd
 from dateutil import parser
 
+from app.rag.new_design.service import get_runtime_service
 from app.rag.new_design.root_cause import load_root_cause_rules
-from app.rag.store import get_rag_store
 from actus.utils.formatting import format_money
 
 INTENT_ALIASES = [
@@ -234,6 +235,144 @@ def _normalize_ticket_id(value: object) -> str | None:
     return ticket_id
 
 
+def _norm_upper_text(value: object) -> str | None:
+    text = str(value or "").strip().upper()
+    return text or None
+
+
+def _canonical_value(payload: object, key: str, default: object = None) -> object:
+    if isinstance(payload, dict):
+        return payload.get(key, default)
+    return getattr(payload, key, default)
+
+
+def _iter_canonical_ticket_lines(ticket: object) -> list[object]:
+    line_map = _canonical_value(ticket, "line_map", {}) or {}
+    if not isinstance(line_map, dict):
+        return []
+
+    out: list[object] = []
+    for line_group in line_map.values():
+        if isinstance(line_group, list):
+            out.extend(line_group)
+        elif line_group is not None:
+            out.append(line_group)
+    return out
+
+
+def _extract_root_causes_from_canonical_ticket(ticket: object) -> tuple[str | None, list[str]]:
+    primary = _normalize_root_cause(
+        _canonical_value(ticket, "root_cause_primary_label")
+        or _canonical_value(ticket, "root_cause_primary_id")
+    )
+    if primary and primary.lower() == "unidentified":
+        primary = None
+
+    all_values = (
+        _canonical_value(ticket, "root_cause_labels")
+        or _canonical_value(ticket, "root_cause_ids")
+        or []
+    )
+    if isinstance(all_values, str):
+        all_values = [all_values]
+
+    seen: list[str] = []
+    for value in all_values:
+        normalized = _normalize_root_cause(value)
+        if not normalized or normalized.lower() == "unidentified" or normalized in seen:
+            continue
+        seen.append(normalized)
+
+    if primary and primary not in seen:
+        seen.insert(0, primary)
+    return primary, seen
+
+
+def _extract_root_causes_from_lines(lines: list[object]) -> tuple[str | None, list[str]]:
+    primary_counts: Counter[str] = Counter()
+    all_counts: Counter[str] = Counter()
+    first_seen: dict[str, int] = {}
+
+    def _remember(cause: str) -> None:
+        if cause not in first_seen:
+            first_seen[cause] = len(first_seen)
+
+    for line in lines:
+        primary = _normalize_root_cause(
+            _canonical_value(line, "root_cause_primary_label")
+            or _canonical_value(line, "root_cause_primary_id")
+        )
+        if primary and primary.lower() != "unidentified":
+            primary_counts[primary] += 1
+            _remember(primary)
+
+        all_values = (
+            _canonical_value(line, "root_cause_labels")
+            or _canonical_value(line, "root_cause_ids")
+            or []
+        )
+        if isinstance(all_values, str):
+            all_values = [all_values]
+
+        added_any = False
+        for value in all_values:
+            normalized = _normalize_root_cause(value)
+            if not normalized or normalized.lower() == "unidentified":
+                continue
+            all_counts[normalized] += 1
+            _remember(normalized)
+            added_any = True
+
+        if not added_any and primary and primary.lower() != "unidentified":
+            all_counts[primary] += 1
+
+    if not all_counts and not primary_counts:
+        return None, []
+
+    ordered_all = sorted(
+        all_counts.keys(),
+        key=lambda cause: (-all_counts[cause], first_seen[cause], cause),
+    )
+    primary = None
+    if primary_counts:
+        primary = sorted(
+            primary_counts.keys(),
+            key=lambda cause: (
+                -primary_counts[cause],
+                -all_counts.get(cause, 0),
+                first_seen[cause],
+                cause,
+            ),
+        )[0]
+    elif ordered_all:
+        primary = ordered_all[0]
+
+    if primary and primary not in ordered_all:
+        ordered_all.insert(0, primary)
+    return primary, ordered_all
+
+
+def _select_ticket_lines(
+    ticket: object,
+    *,
+    invoice_number: str | None,
+    item_number: str | None,
+) -> list[object]:
+    if not invoice_number and not item_number:
+        return []
+
+    matched: list[object] = []
+    for line in _iter_canonical_ticket_lines(ticket):
+        line_invoice = _norm_upper_text(_canonical_value(line, "invoice_number"))
+        line_item = _norm_upper_text(_canonical_value(line, "item_number"))
+        if invoice_number and line_invoice != invoice_number:
+            continue
+        if item_number and line_item != item_number:
+            continue
+        matched.append(line)
+    return matched
+
+
 def _extract_root_causes(rows: list[dict]) -> tuple[str | None, list[str]]:
     primary = None
     seen: list[str] = []
@@ -273,7 +412,7 @@ def _extract_root_causes(rows: list[dict]) -> tuple[str | None, list[str]]:
     return primary, seen
 
 
-def _lookup_root_causes(ticket_series: pd.Series) -> pd.DataFrame:
+def _lookup_root_causes_from_store(ticket_series: pd.Series) -> pd.DataFrame:
     ticket_map: dict[str, list[int]] = {}
     for idx, raw in ticket_series.items():
         ticket_id = _normalize_ticket_id(raw)
@@ -294,6 +433,8 @@ def _lookup_root_causes(ticket_series: pd.Series) -> pd.DataFrame:
 
     store = None
     try:
+        from app.rag.store import get_rag_store
+
         store = get_rag_store()
     except Exception:
         return results
@@ -318,6 +459,85 @@ def _lookup_root_causes(ticket_series: pd.Series) -> pd.DataFrame:
         if not ticket_id:
             continue
         primary, all_causes = root_map.get(ticket_id, (None, []))
+        results.at[idx, "Root Causes (Primary)"] = primary
+        if all_causes:
+            results.at[idx, "Root Causes (All)"] = ", ".join(all_causes)
+            results.at[idx, "Root Cause Mixed"] = len(set(all_causes)) > 1
+
+    return results
+
+
+def _lookup_root_causes(
+    ticket_series: pd.Series,
+    invoice_series: pd.Series | None = None,
+    item_series: pd.Series | None = None,
+) -> pd.DataFrame:
+    ticket_ids = {
+        ticket_id
+        for raw in ticket_series.tolist()
+        if (ticket_id := _normalize_ticket_id(raw))
+    }
+
+    try:
+        service = get_runtime_service(refresh=False, search_ready=False)
+        canonical_tickets = service.get_canonical_tickets(required_ticket_ids=ticket_ids)
+    except Exception:
+        return _lookup_root_causes_from_store(ticket_series)
+
+    if not isinstance(canonical_tickets, dict):
+        return _lookup_root_causes_from_store(ticket_series)
+
+    if ticket_ids and not ticket_ids.intersection(canonical_tickets.keys()):
+        return _lookup_root_causes_from_store(ticket_series)
+
+    results = pd.DataFrame(
+        {
+            "Root Causes (Primary)": [None] * len(ticket_series),
+            "Root Causes (All)": [None] * len(ticket_series),
+            "Root Cause Mixed": [False] * len(ticket_series),
+        },
+        index=ticket_series.index,
+    )
+
+    ticket_level_map: dict[str, tuple[str | None, list[str]]] = {}
+    scoped_map: dict[tuple[str, str | None, str | None], tuple[str | None, list[str]]] = {}
+
+    for ticket_id in ticket_ids:
+        ticket = canonical_tickets.get(ticket_id)
+        if ticket is None:
+            continue
+        ticket_level_map[ticket_id] = _extract_root_causes_from_canonical_ticket(ticket)
+
+    for idx, raw in ticket_series.items():
+        ticket_id = _normalize_ticket_id(raw)
+        if not ticket_id:
+            continue
+
+        ticket = canonical_tickets.get(ticket_id)
+        if ticket is None:
+            continue
+
+        invoice_number = None
+        if invoice_series is not None and idx in invoice_series.index:
+            invoice_number = _norm_upper_text(invoice_series.at[idx])
+
+        item_number = None
+        if item_series is not None and idx in item_series.index:
+            item_number = _norm_upper_text(item_series.at[idx])
+
+        cache_key = (ticket_id, invoice_number, item_number)
+        if cache_key not in scoped_map:
+            matched_lines = _select_ticket_lines(
+                ticket,
+                invoice_number=invoice_number,
+                item_number=item_number,
+            )
+            if matched_lines:
+                scoped_map[cache_key] = _extract_root_causes_from_lines(matched_lines)
+            else:
+                scoped_map[cache_key] = ticket_level_map.get(ticket_id, (None, []))
+
+        primary, all_causes = scoped_map[cache_key]
         results.at[idx, "Root Causes (Primary)"] = primary
         if all_causes:
             results.at[idx, "Root Causes (All)"] = ", ".join(all_causes)
@@ -440,7 +660,11 @@ def intent_credit_ops_snapshot(query: str, df: pd.DataFrame):
 
     ticket_series = df_use.get("Ticket Number", pd.Series(index=df_use.index, dtype="object"))
     if not ticket_series.empty:
-        rag_root_causes = _lookup_root_causes(ticket_series)
+        rag_root_causes = _lookup_root_causes(
+            ticket_series,
+            df_use.get("Invoice Number"),
+            df_use.get("Item Number"),
+        )
         df_use["Root Causes"] = df_use["Root Causes"].fillna(rag_root_causes["Root Causes (Primary)"])
         df_use["Root Causes (All)"] = df_use["Root Causes (All)"].fillna(rag_root_causes["Root Causes (All)"])
         df_use["Root Cause Mixed"] = df_use["Root Cause Mixed"] | rag_root_causes["Root Cause Mixed"].fillna(False)

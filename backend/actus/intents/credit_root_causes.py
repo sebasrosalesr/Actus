@@ -45,7 +45,11 @@ def intent_root_cause_summary(query: str, df: pd.DataFrame):
         dv["Credit Request Total"], errors="coerce"
     ).fillna(0.0)
 
-    root_causes = _lookup_root_causes(dv["Ticket Number"])
+    root_causes = _lookup_root_causes(
+        dv["Ticket Number"],
+        dv.get("Invoice Number"),
+        dv.get("Item Number"),
+    )
     cause_series = root_causes["Root Causes (Primary)"]
     has_root = cause_series.notna() & cause_series.astype(str).str.strip().ne("")
     if not has_root.any():

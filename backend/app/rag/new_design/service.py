@@ -543,6 +543,32 @@ class ActusHybridRAGService:
             "results": self._serialize_results(results),
         }
 
+    def get_canonical_tickets(
+        self,
+        *,
+        required_ticket_ids: set[str] | None = None,
+    ) -> dict[str, Any]:
+        self._ensure_canonical_ready()
+        with self._lock:
+            if self._artifacts is None:
+                raise RuntimeError("Service is not initialized. Call refresh_from_firebase() or load_from_rows() first.")
+            canonical_tickets = self._artifacts.canonical_tickets
+
+        normalized_required = {
+            str(ticket_id).strip().upper()
+            for ticket_id in (required_ticket_ids or set())
+            if str(ticket_id).strip()
+        }
+        missing = normalized_required.difference(canonical_tickets.keys())
+        if missing:
+            self._refresh_canonical_only_from_firebase()
+            with self._lock:
+                if self._artifacts is None:
+                    raise RuntimeError("Service is not initialized. Call refresh_from_firebase() or load_from_rows() first.")
+                canonical_tickets = self._artifacts.canonical_tickets
+
+        return canonical_tickets
+
     def analyze_item(self, item_number: str) -> dict[str, Any]:
         self._ensure_canonical_ready()
         with self._lock:
@@ -596,7 +622,11 @@ _RUNTIME_SERVICE: ActusHybridRAGService | None = None
 _RUNTIME_LOCK = RLock()
 
 
-def get_runtime_service(refresh: bool = False) -> ActusHybridRAGService:
+def get_runtime_service(
+    refresh: bool = False,
+    *,
+    search_ready: bool = True,
+) -> ActusHybridRAGService:
     global _RUNTIME_SERVICE
     with _RUNTIME_LOCK:
         if _RUNTIME_SERVICE is None:
@@ -604,7 +634,7 @@ def get_runtime_service(refresh: bool = False) -> ActusHybridRAGService:
 
         if refresh:
             _RUNTIME_SERVICE.refresh_from_firebase()
-        else:
+        elif search_ready:
             _RUNTIME_SERVICE.ensure_search_ready()
 
         return _RUNTIME_SERVICE

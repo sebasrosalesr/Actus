@@ -1,4 +1,5 @@
 import re
+from functools import lru_cache
 from zoneinfo import ZoneInfo
 from typing import Optional, Tuple
 
@@ -6,6 +7,7 @@ import numpy as np
 import pandas as pd
 from dateutil import parser
 
+from app.rag.new_design.root_cause import load_root_cause_rules
 from app.rag.store import get_rag_store
 from actus.utils.formatting import format_money
 
@@ -16,19 +18,8 @@ INTENT_ALIASES = [
 
 INDY_TZ = ZoneInfo("America/Indiana/Indianapolis")
 
-ROOT_CAUSE_LABELS = [
-    "Item should be PPD",
-    "Item not price matched when subbing",
-    "Freight should not of been charged",
-    "Item invoiced after price change",
-    "Price discrepancy",
-]
-ROOT_CAUSE_CANONICAL = {
-    re.sub(r"\s+", " ", label.strip().lower()): label
-    for label in ROOT_CAUSE_LABELS
-}
 ROOT_CAUSE_ALIASES = {
-    "freight should not have been charged": "Freight should not of been charged",
+    "freight should not of been charged": "Freight should not have been charged",
 }
 
 
@@ -187,6 +178,23 @@ def _parse_window(query: str) -> tuple[pd.Timestamp | None, pd.Timestamp | None,
     return None, None, None
 
 
+@lru_cache(maxsize=1)
+def _root_cause_label_maps() -> tuple[dict[str, str], dict[str, str]]:
+    by_id: dict[str, str] = {}
+    by_label: dict[str, str] = {}
+    try:
+        for rule in load_root_cause_rules():
+            rule_id = str(rule.id or "").strip().lower()
+            label = str(rule.label or rule.id or "").strip()
+            if not rule_id or not label:
+                continue
+            by_id[rule_id] = label
+            by_label[re.sub(r"\s+", " ", label.lower())] = label
+    except Exception:
+        return {}, {}
+    return by_id, by_label
+
+
 def _normalize_root_cause(value: object) -> str | None:
     if value is None:
         return None
@@ -195,7 +203,11 @@ def _normalize_root_cause(value: object) -> str | None:
         return None
     text = re.sub(r"[.]+$", "", text)
     text = re.sub(r"\s+", " ", text)
-    return ROOT_CAUSE_ALIASES.get(text) or ROOT_CAUSE_CANONICAL.get(text)
+    if text in ROOT_CAUSE_ALIASES:
+        return ROOT_CAUSE_ALIASES[text]
+
+    by_id, by_label = _root_cause_label_maps()
+    return by_id.get(text) or by_label.get(text)
 
 
 def _localize_indy(series: pd.Series) -> pd.Series:
@@ -229,8 +241,18 @@ def _extract_root_causes(rows: list[dict]) -> tuple[str | None, list[str]]:
         meta = row.get("metadata") or {}
         if not isinstance(meta, dict):
             continue
-        root_cause = _normalize_root_cause(meta.get("root_cause"))
-        root_causes_all = meta.get("root_causes_all")
+
+        root_cause = (
+            _normalize_root_cause(meta.get("root_cause"))
+            or _normalize_root_cause(meta.get("root_cause_primary_label"))
+            or _normalize_root_cause(meta.get("root_cause_primary_id"))
+        )
+
+        root_causes_all = (
+            meta.get("root_causes_all")
+            or meta.get("root_cause_labels")
+            or meta.get("root_cause_ids")
+        )
         if isinstance(root_causes_all, str):
             root_causes_all = [root_causes_all]
         if isinstance(root_causes_all, list):

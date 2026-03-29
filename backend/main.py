@@ -56,6 +56,13 @@ def _docs_enabled() -> bool:
     return _flag_enabled("ACTUS_DOCS_ENABLED", default=not _is_production())
 
 
+def _auth_mode() -> str:
+    raw = os.environ.get("ACTUS_AUTH_MODE", "").strip().lower()
+    if raw:
+        return raw
+    return "api_key" if os.environ.get("ACTUS_API_KEY", "").strip() else "none"
+
+
 def _cors_origins() -> list[str]:
     raw = os.environ.get("ACTUS_CORS_ORIGINS", "")
     if raw.strip():
@@ -80,8 +87,20 @@ def _validate_runtime_security() -> None:
         return
 
     errors: list[str] = []
-    if not os.environ.get("ACTUS_API_KEY", "").strip():
-        errors.append("ACTUS_API_KEY is required in production.")
+    auth_mode = _auth_mode()
+    if auth_mode == "api_key":
+        if not os.environ.get("ACTUS_API_KEY", "").strip():
+            errors.append("ACTUS_API_KEY is required in production when ACTUS_AUTH_MODE=api_key.")
+    elif auth_mode == "public":
+        if not os.environ.get("ACTUS_API_KEY", "").strip():
+            errors.append("ACTUS_API_KEY is required in production when ACTUS_AUTH_MODE=public for internal routes.")
+    elif auth_mode == "cloudflare_access":
+        if not os.environ.get("ACTUS_CLOUDFLARE_ACCESS_TEAM_DOMAIN", "").strip():
+            errors.append("ACTUS_CLOUDFLARE_ACCESS_TEAM_DOMAIN is required in production when ACTUS_AUTH_MODE=cloudflare_access.")
+        if not os.environ.get("ACTUS_CLOUDFLARE_ACCESS_AUD", "").strip():
+            errors.append("ACTUS_CLOUDFLARE_ACCESS_AUD is required in production when ACTUS_AUTH_MODE=cloudflare_access.")
+    else:
+        errors.append("ACTUS_AUTH_MODE must be one of: public, api_key, cloudflare_access.")
     if not os.environ.get("ACTUS_CORS_ORIGINS", "").strip():
         errors.append("ACTUS_CORS_ORIGINS is required in production.")
     if os.environ.get("ACTUS_CORS_ORIGIN_REGEX", "").strip():
@@ -124,6 +143,9 @@ APP.add_middleware(
 
 @APP.middleware("http")
 async def _api_key_guard(request: Request, call_next):
+    if _auth_mode() != "api_key":
+        return await call_next(request)
+
     api_key = os.environ.get("ACTUS_API_KEY")
     if not api_key:
         return await call_next(request)
@@ -179,7 +201,7 @@ ensure_openmp_env()
 from app.api.rag import router as rag_router
 from app.api.help import router as help_router
 from app.api.quality import router as quality_router
-from app.api.security import require_api_key
+from app.api.security import require_authenticated_request, require_internal_request
 from app.quality.store import init_quality_db, record_quality_event, resolve_db_path
 from app.rag.new_design.service import get_runtime_service
 APP.include_router(rag_router)
@@ -603,7 +625,7 @@ def health() -> Dict[str, str]:
     return {"status": "ok"}
 
 
-@APP.get("/api/health/openrouter", dependencies=[Depends(require_api_key)])
+@APP.get("/api/health/openrouter", dependencies=[Depends(require_internal_request)])
 def health_openrouter() -> Dict[str, str]:
     try:
         _openrouter_call("ping")
@@ -618,7 +640,7 @@ def health_openrouter() -> Dict[str, str]:
     return {"status": "ok"}
 
 
-@APP.get("/api/user-context", dependencies=[Depends(require_api_key)])
+@APP.get("/api/user-context", dependencies=[Depends(require_authenticated_request)])
 def user_context(email: str | None = None) -> Dict[str, Any]:
     if not email:
         raise HTTPException(status_code=400, detail="email is required")
@@ -684,7 +706,7 @@ def _shutdown() -> None:
     _RAG_REBUILD_STOP.set()
 
 
-@APP.post("/api/ask", dependencies=[Depends(require_api_key)])
+@APP.post("/api/ask", dependencies=[Depends(require_authenticated_request)])
 def ask(payload: AskRequest) -> Dict[str, Any]:
     t0 = time.perf_counter()
     query = payload.query.strip()

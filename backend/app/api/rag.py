@@ -9,7 +9,12 @@ import re
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
-from app.api.security import client_safe_detail, require_api_key, should_log_tracebacks
+from app.api.security import (
+    client_safe_detail,
+    require_authenticated_request,
+    require_internal_request,
+    should_log_tracebacks,
+)
 from app.rag.next_action_engine import evaluate_next_action, evaluate_next_action_with_trace
 from app.rag.new_design.service import get_runtime_service
 from app.rag.store import get_rag_store
@@ -720,7 +725,7 @@ def enrich_next_action(result: Dict[str, Any]) -> Dict[str, Any]:
     return result
 
 
-router = APIRouter(dependencies=[Depends(require_api_key)])
+router = APIRouter(dependencies=[Depends(require_authenticated_request)])
 
 
 def _server_error(exc: Exception, *, generic: str) -> HTTPException:
@@ -782,7 +787,7 @@ class NewDesignTicketAnalysisRequest(BaseModel):
     refresh: bool = False
 
 
-@router.get("/rag/health")
+@router.get("/rag/health", dependencies=[Depends(require_internal_request)])
 def rag_health() -> dict[str, Any]:
     try:
         store = get_rag_store()
@@ -897,7 +902,7 @@ def rag_new_search(payload: NewDesignSearchRequest) -> dict[str, Any]:
         raise _server_error(exc, generic="RAG search failed.")
 
 
-@router.post("/rag/new/answer")
+@router.post("/rag/new/answer", dependencies=[Depends(require_internal_request)])
 def rag_new_answer(payload: NewDesignAnswerRequest) -> dict[str, Any]:
     try:
         service = get_runtime_service(refresh=payload.refresh)
@@ -910,7 +915,7 @@ def rag_new_answer(payload: NewDesignAnswerRequest) -> dict[str, Any]:
         raise _server_error(exc, generic="RAG answer generation failed.")
 
 
-@router.post("/rag/new/refresh")
+@router.post("/rag/new/refresh", dependencies=[Depends(require_internal_request)])
 def rag_new_refresh(payload: Optional[NewDesignRefreshRequest] = None) -> dict[str, Any]:
     try:
         request_payload = payload or NewDesignRefreshRequest()

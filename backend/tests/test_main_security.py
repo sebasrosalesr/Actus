@@ -75,6 +75,7 @@ class TestMainSecurity(unittest.TestCase):
             with _reloaded_main(
                 {
                     "ACTUS_ENV": "production",
+                    "ACTUS_AUTH_MODE": "api_key",
                     "ACTUS_API_KEY": "",
                     "ACTUS_CORS_ORIGINS": "https://app.example.com",
                     "ACTUS_ALLOWED_HOSTS": "actus-app.fly.dev",
@@ -89,6 +90,7 @@ class TestMainSecurity(unittest.TestCase):
             with _reloaded_main(
                 {
                     "ACTUS_ENV": "production",
+                    "ACTUS_AUTH_MODE": "api_key",
                     "ACTUS_API_KEY": "secret",
                     "ACTUS_CORS_ORIGINS": "https://app.example.com",
                     "ACTUS_ALLOWED_HOSTS": "actus-app.fly.dev",
@@ -98,10 +100,71 @@ class TestMainSecurity(unittest.TestCase):
             ):
                 pass
 
+    def test_production_boot_fails_in_public_mode_without_api_key(self) -> None:
+        with self.assertRaises(RuntimeError):
+            with _reloaded_main(
+                {
+                    "ACTUS_ENV": "production",
+                    "ACTUS_AUTH_MODE": "public",
+                    "ACTUS_API_KEY": "",
+                    "ACTUS_CORS_ORIGINS": "https://app.example.com",
+                    "ACTUS_ALLOWED_HOSTS": "actus-app.fly.dev",
+                    "ACTUS_DOCS_ENABLED": "false",
+                    "ACTUS_CORS_ORIGIN_REGEX": "",
+                }
+            ):
+                pass
+
+    def test_production_boot_fails_when_cloudflare_access_config_missing(self) -> None:
+        with self.assertRaises(RuntimeError):
+            with _reloaded_main(
+                {
+                    "ACTUS_ENV": "production",
+                    "ACTUS_AUTH_MODE": "cloudflare_access",
+                    "ACTUS_CORS_ORIGINS": "https://app.example.com",
+                    "ACTUS_ALLOWED_HOSTS": "actus-app.fly.dev",
+                    "ACTUS_DOCS_ENABLED": "false",
+                    "ACTUS_CORS_ORIGIN_REGEX": "",
+                    "ACTUS_CLOUDFLARE_ACCESS_TEAM_DOMAIN": "",
+                    "ACTUS_CLOUDFLARE_ACCESS_AUD": "",
+                }
+            ):
+                pass
+
+    def test_production_boot_accepts_cloudflare_access_mode(self) -> None:
+        with _reloaded_main(
+            {
+                "ACTUS_ENV": "production",
+                "ACTUS_AUTH_MODE": "cloudflare_access",
+                "ACTUS_CORS_ORIGINS": "https://app.example.com",
+                "ACTUS_ALLOWED_HOSTS": "actus-app.fly.dev",
+                "ACTUS_DOCS_ENABLED": "false",
+                "ACTUS_CORS_ORIGIN_REGEX": "",
+                "ACTUS_CLOUDFLARE_ACCESS_TEAM_DOMAIN": "example.cloudflareaccess.com",
+                "ACTUS_CLOUDFLARE_ACCESS_AUD": "aud-123",
+            }
+        ) as module:
+            self.assertIsNone(module.APP.docs_url)
+
+    def test_production_boot_accepts_public_mode(self) -> None:
+        with _reloaded_main(
+            {
+                "ACTUS_ENV": "production",
+                "ACTUS_AUTH_MODE": "public",
+                "ACTUS_API_KEY": "internal-secret",
+                "ACTUS_CORS_ORIGINS": "https://app.example.com",
+                "ACTUS_ALLOWED_HOSTS": "actus-app.fly.dev",
+                "ACTUS_DOCS_ENABLED": "false",
+                "ACTUS_CORS_ORIGIN_REGEX": "",
+            }
+        ) as module:
+            self.assertIsNone(module.APP.docs_url)
+
     def test_production_app_disables_docs_and_uses_strict_middleware(self) -> None:
         with _reloaded_main(
             {
                 "ACTUS_ENV": "production",
+                "ACTUS_AUTH_MODE": "api_key",
                 "ACTUS_API_KEY": "secret",
                 "ACTUS_CORS_ORIGINS": "https://app.example.com",
                 "ACTUS_ALLOWED_HOSTS": "actus-app.fly.dev",
@@ -124,6 +187,7 @@ class TestMainSecurity(unittest.TestCase):
         with _reloaded_main(
             {
                 "ACTUS_ENV": "development",
+                "ACTUS_AUTH_MODE": "api_key",
                 "ACTUS_API_KEY": "secret",
                 "ACTUS_DOCS_ENABLED": "true",
             }
@@ -146,10 +210,84 @@ class TestMainSecurity(unittest.TestCase):
             response = asyncio.run(module._api_key_guard(request, call_next))
             self.assertEqual(401, response.status_code)
 
+    def test_require_authenticated_request_allows_public_mode(self) -> None:
+        with _reloaded_main(
+            {
+                "ACTUS_ENV": "production",
+                "ACTUS_AUTH_MODE": "public",
+                "ACTUS_API_KEY": "internal-secret",
+                "ACTUS_CORS_ORIGINS": "https://app.example.com",
+                "ACTUS_ALLOWED_HOSTS": "actus-app.fly.dev",
+                "ACTUS_DOCS_ENABLED": "false",
+                "ACTUS_CORS_ORIGIN_REGEX": "",
+            }
+        ):
+            request = _request_for("/api/ask", method="POST")
+            security_api.require_authenticated_request(request)
+
+    def test_require_internal_request_requires_api_key_in_public_mode(self) -> None:
+        with _reloaded_main(
+            {
+                "ACTUS_ENV": "production",
+                "ACTUS_AUTH_MODE": "public",
+                "ACTUS_API_KEY": "internal-secret",
+                "ACTUS_CORS_ORIGINS": "https://app.example.com",
+                "ACTUS_ALLOWED_HOSTS": "actus-app.fly.dev",
+                "ACTUS_DOCS_ENABLED": "false",
+                "ACTUS_CORS_ORIGIN_REGEX": "",
+            }
+        ):
+            request = _request_for("/api/health/openrouter")
+            with self.assertRaises(main_module.HTTPException) as ctx:
+                security_api.require_internal_request(request)
+
+            self.assertEqual(401, ctx.exception.status_code)
+
+    def test_require_authenticated_request_accepts_cloudflare_access(self) -> None:
+        with _reloaded_main(
+            {
+                "ACTUS_ENV": "production",
+                "ACTUS_AUTH_MODE": "cloudflare_access",
+                "ACTUS_CORS_ORIGINS": "https://app.example.com",
+                "ACTUS_ALLOWED_HOSTS": "actus-app.fly.dev",
+                "ACTUS_DOCS_ENABLED": "false",
+                "ACTUS_CORS_ORIGIN_REGEX": "",
+                "ACTUS_CLOUDFLARE_ACCESS_TEAM_DOMAIN": "example.cloudflareaccess.com",
+                "ACTUS_CLOUDFLARE_ACCESS_AUD": "aud-123",
+            }
+        ) as module:
+            request = _request_for(
+                "/api/ask",
+                method="POST",
+                headers={"cf-access-jwt-assertion": "good-token"},
+            )
+            with patch.object(security_api, "_verify_cloudflare_access_jwt", return_value={"sub": "user@example.com"}):
+                security_api.require_authenticated_request(request)
+
+    def test_require_authenticated_request_rejects_missing_cloudflare_token(self) -> None:
+        with _reloaded_main(
+            {
+                "ACTUS_ENV": "production",
+                "ACTUS_AUTH_MODE": "cloudflare_access",
+                "ACTUS_CORS_ORIGINS": "https://app.example.com",
+                "ACTUS_ALLOWED_HOSTS": "actus-app.fly.dev",
+                "ACTUS_DOCS_ENABLED": "false",
+                "ACTUS_CORS_ORIGIN_REGEX": "",
+                "ACTUS_CLOUDFLARE_ACCESS_TEAM_DOMAIN": "example.cloudflareaccess.com",
+                "ACTUS_CLOUDFLARE_ACCESS_AUD": "aud-123",
+            }
+        ):
+            request = _request_for("/api/ask", method="POST")
+            with self.assertRaises(main_module.HTTPException) as ctx:
+                security_api.require_authenticated_request(request)
+
+            self.assertEqual(401, ctx.exception.status_code)
+
     def test_health_endpoint_remains_public(self) -> None:
         with _reloaded_main(
             {
                 "ACTUS_ENV": "development",
+                "ACTUS_AUTH_MODE": "api_key",
                 "ACTUS_API_KEY": "secret",
                 "ACTUS_DOCS_ENABLED": "true",
             }
@@ -176,6 +314,7 @@ class TestMainSecurity(unittest.TestCase):
         with _reloaded_main(
             {
                 "ACTUS_ENV": "production",
+                "ACTUS_AUTH_MODE": "api_key",
                 "ACTUS_API_KEY": "secret",
                 "ACTUS_CORS_ORIGINS": "https://app.example.com",
                 "ACTUS_ALLOWED_HOSTS": "actus-app.fly.dev",
@@ -192,6 +331,7 @@ class TestMainSecurity(unittest.TestCase):
         with _reloaded_main(
             {
                 "ACTUS_ENV": "production",
+                "ACTUS_AUTH_MODE": "api_key",
                 "ACTUS_API_KEY": "secret",
                 "ACTUS_CORS_ORIGINS": "https://app.example.com",
                 "ACTUS_ALLOWED_HOSTS": "actus-app.fly.dev",
@@ -208,6 +348,7 @@ class TestMainSecurity(unittest.TestCase):
         with _reloaded_main(
             {
                 "ACTUS_ENV": "production",
+                "ACTUS_AUTH_MODE": "api_key",
                 "ACTUS_API_KEY": "secret",
                 "ACTUS_CORS_ORIGINS": "https://app.example.com",
                 "ACTUS_ALLOWED_HOSTS": "actus-app.fly.dev",
@@ -226,6 +367,7 @@ class TestMainSecurity(unittest.TestCase):
         with _reloaded_main(
             {
                 "ACTUS_ENV": "production",
+                "ACTUS_AUTH_MODE": "api_key",
                 "ACTUS_API_KEY": "secret",
                 "ACTUS_CORS_ORIGINS": "https://app.example.com",
                 "ACTUS_ALLOWED_HOSTS": "actus-app.fly.dev",
@@ -346,6 +488,7 @@ class TestMainSecurity(unittest.TestCase):
         with _reloaded_main(
             {
                 "ACTUS_ENV": "production",
+                "ACTUS_AUTH_MODE": "api_key",
                 "ACTUS_API_KEY": "secret",
                 "ACTUS_CORS_ORIGINS": "https://app.example.com",
                 "ACTUS_ALLOWED_HOSTS": "actus-app.fly.dev",
@@ -360,10 +503,32 @@ class TestMainSecurity(unittest.TestCase):
             self.assertEqual(500, ctx.exception.status_code)
             self.assertEqual("User context backend is unavailable.", ctx.exception.detail)
 
+    def test_internal_rag_refresh_requires_api_key_in_public_mode(self) -> None:
+        with _reloaded_main(
+            {
+                "ACTUS_ENV": "production",
+                "ACTUS_AUTH_MODE": "public",
+                "ACTUS_API_KEY": "internal-secret",
+                "ACTUS_CORS_ORIGINS": "https://app.example.com",
+                "ACTUS_ALLOWED_HOSTS": "actus-app.fly.dev",
+                "ACTUS_DOCS_ENABLED": "false",
+                "ACTUS_CORS_ORIGIN_REGEX": "",
+            }
+        ) as module:
+            with _test_client(module) as client:
+                response = client.post(
+                    "/rag/new/refresh",
+                    headers={"host": "actus-app.fly.dev"},
+                    json={"index": False},
+                )
+
+            self.assertEqual(401, response.status_code)
+
     def test_rag_search_hides_upstream_detail_in_production(self) -> None:
         with _reloaded_main(
             {
                 "ACTUS_ENV": "production",
+                "ACTUS_AUTH_MODE": "api_key",
                 "ACTUS_API_KEY": "secret",
                 "ACTUS_CORS_ORIGINS": "https://app.example.com",
                 "ACTUS_ALLOWED_HOSTS": "actus-app.fly.dev",

@@ -3,9 +3,9 @@ from typing import Dict
 from fastapi import APIRouter, Depends
 
 from actus.help_text import HELP_TEXT
-from app.api.security import require_api_key
+from app.api.security import require_internal_request
 
-router = APIRouter(dependencies=[Depends(require_api_key)])
+router = APIRouter(dependencies=[Depends(require_internal_request)])
 
 
 @router.get("/api/help")

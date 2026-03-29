@@ -5,11 +5,11 @@ from typing import Any, Dict
 
 from fastapi import APIRouter, Depends, Query
 
-from app.api.security import require_api_key
+from app.api.security import require_internal_request
 from app.quality.store import quality_summary, quality_trends
 
 
-router = APIRouter(dependencies=[Depends(require_api_key)])
+router = APIRouter(dependencies=[Depends(require_internal_request)])
 
 
 def _release_tag_default() -> str | None:

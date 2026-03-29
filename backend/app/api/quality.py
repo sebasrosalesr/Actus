@@ -3,12 +3,13 @@ from __future__ import annotations
 import os
 from typing import Any, Dict
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Depends, Query
 
+from app.api.security import require_api_key
 from app.quality.store import quality_summary, quality_trends
 
 
-router = APIRouter()
+router = APIRouter(dependencies=[Depends(require_api_key)])
 
 
 def _release_tag_default() -> str | None:
@@ -38,4 +39,3 @@ def api_quality_trends(
         group_by=group_by,
         release_tag=release_tag or _release_tag_default(),
     )
-

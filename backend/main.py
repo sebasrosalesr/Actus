@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+from collections import deque
+import hashlib
 import json
+import math
 import os
 import time
 import threading
@@ -8,10 +11,11 @@ from pathlib import Path
 from typing import Any, Dict, Literal
 
 import pandas as pd
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from dotenv import load_dotenv
+from starlette.middleware.trustedhost import TrustedHostMiddleware
 from starlette.responses import JSONResponse
 
 import firebase_admin
@@ -23,12 +27,33 @@ from actus.openrouter_client import openrouter_chat
 from scripts import build_rag_index
 
 DEFAULT_OPENROUTER_FALLBACK_MODEL = "google/gemini-3.1-flash-lite-preview"
+DEFAULT_DEV_ALLOWED_HOSTS = ["localhost", "127.0.0.1", "[::1]", "testserver"]
+CORS_ALLOWED_METHODS = ["GET", "POST", "OPTIONS"]
+CORS_ALLOWED_HEADERS = ["Content-Type", "Authorization", "X-API-Key"]
 
 
 # Local .env should fill missing values, not override deployed environment.
 load_dotenv(dotenv_path=Path(__file__).with_name(".env"), override=False)
 
-APP = FastAPI(title="Actus Backend", version="0.1.0")
+
+def _env_name() -> str:
+    value = os.environ.get("ACTUS_ENV", "").strip().lower()
+    return value or "development"
+
+
+def _is_production() -> bool:
+    return _env_name() in {"production", "prod"}
+
+
+def _flag_enabled(name: str, *, default: bool) -> bool:
+    raw = os.environ.get(name, "").strip().lower()
+    if not raw:
+        return default
+    return raw in {"1", "true", "yes", "on"}
+
+
+def _docs_enabled() -> bool:
+    return _flag_enabled("ACTUS_DOCS_ENABLED", default=not _is_production())
 
 
 def _cors_origins() -> list[str]:
@@ -42,13 +67,58 @@ def _cors_origin_regex() -> str | None:
     raw = os.environ.get("ACTUS_CORS_ORIGIN_REGEX", "").strip()
     return raw or None
 
+
+def _trusted_hosts() -> list[str]:
+    raw = os.environ.get("ACTUS_ALLOWED_HOSTS", "")
+    if raw.strip():
+        return [host.strip() for host in raw.split(",") if host.strip()]
+    return list(DEFAULT_DEV_ALLOWED_HOSTS)
+
+
+def _validate_runtime_security() -> None:
+    if not _is_production():
+        return
+
+    errors: list[str] = []
+    if not os.environ.get("ACTUS_API_KEY", "").strip():
+        errors.append("ACTUS_API_KEY is required in production.")
+    if not os.environ.get("ACTUS_CORS_ORIGINS", "").strip():
+        errors.append("ACTUS_CORS_ORIGINS is required in production.")
+    if os.environ.get("ACTUS_CORS_ORIGIN_REGEX", "").strip():
+        errors.append("ACTUS_CORS_ORIGIN_REGEX is not allowed in production; use explicit ACTUS_CORS_ORIGINS.")
+    if _docs_enabled():
+        errors.append("ACTUS_DOCS_ENABLED must be false in production.")
+    if not os.environ.get("ACTUS_ALLOWED_HOSTS", "").strip():
+        errors.append("ACTUS_ALLOWED_HOSTS is required in production.")
+
+    if errors:
+        raise RuntimeError(
+            "Insecure production configuration:\n- " + "\n- ".join(errors)
+        )
+
+
+_validate_runtime_security()
+
+APP = FastAPI(
+    title="Actus Backend",
+    version="0.1.0",
+    docs_url="/docs" if _docs_enabled() else None,
+    redoc_url="/redoc" if _docs_enabled() else None,
+    openapi_url="/openapi.json" if _docs_enabled() else None,
+)
+
+APP.add_middleware(
+    TrustedHostMiddleware,
+    allowed_hosts=_trusted_hosts(),
+)
+
 APP.add_middleware(
     CORSMiddleware,
     allow_origins=_cors_origins(),
     allow_origin_regex=_cors_origin_regex(),
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=CORS_ALLOWED_METHODS,
+    allow_headers=CORS_ALLOWED_HEADERS,
 )
 
 
@@ -59,7 +129,9 @@ async def _api_key_guard(request: Request, call_next):
         return await call_next(request)
 
     path = request.url.path or ""
-    if path in {"/api/health", "/api/health/openrouter"} or path.startswith("/docs") or path.startswith("/openapi"):
+    if path == "/api/health":
+        return await call_next(request)
+    if _docs_enabled() and (path.startswith("/docs") or path.startswith("/openapi") or path.startswith("/redoc")):
         return await call_next(request)
 
     if not (path.startswith("/api") or path.startswith("/rag")):
@@ -76,6 +148,26 @@ async def _api_key_guard(request: Request, call_next):
 
     return await call_next(request)
 
+
+@APP.middleware("http")
+async def _rate_limit_guard(request: Request, call_next):
+    if not _rate_limit_enabled():
+        return await call_next(request)
+
+    scope = _rate_limit_scope(request.url.path or "")
+    if not scope:
+        return await call_next(request)
+
+    allowed, retry_after = _consume_rate_limit(scope, _request_identity(request))
+    if not allowed:
+        return JSONResponse(
+            {"detail": "Rate limit exceeded"},
+            status_code=429,
+            headers={"Retry-After": str(retry_after)},
+        )
+
+    return await call_next(request)
+
 APP_DIR = Path(__file__).with_name("app")
 if APP_DIR.is_dir():
     # Allow app.py to behave like a package for app.* imports.
@@ -87,6 +179,7 @@ ensure_openmp_env()
 from app.api.rag import router as rag_router
 from app.api.help import router as help_router
 from app.api.quality import router as quality_router
+from app.api.security import require_api_key
 from app.quality.store import init_quality_db, record_quality_event, resolve_db_path
 from app.rag.new_design.service import get_runtime_service
 APP.include_router(rag_router)
@@ -99,6 +192,8 @@ _RAG_REBUILD_STOP = threading.Event()
 _RAG_PRELOAD_LOCK = threading.Lock()
 _RAG_PRELOAD_STARTED = False
 _RAG_WARMUP_LOCK = threading.Lock()
+_RATE_LIMIT_LOCK = threading.Lock()
+_RATE_LIMIT_BUCKETS: Dict[tuple[str, str], deque[float]] = {}
 
 
 class AskRequest(BaseModel):
@@ -109,6 +204,103 @@ class AskRequest(BaseModel):
 def _release_tag() -> str:
     value = os.environ.get("ACTUS_RELEASE_TAG", "").strip()
     return value or "dev"
+
+
+def _client_safe_detail(detail: str, *, generic: str) -> str:
+    return generic if _is_production() else detail
+
+
+def _client_safe_error(detail: str, *, generic: str = "Request failed.") -> str:
+    return generic if _is_production() else detail
+
+
+def _log_raw_queries_enabled() -> bool:
+    return _flag_enabled("ACTUS_LOG_RAW_QUERIES", default=not _is_production())
+
+
+def _quality_query_value(query: str) -> str:
+    text = str(query or "")
+    if _log_raw_queries_enabled():
+        return text
+    digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
+    return f"sha256:{digest}"
+
+
+def _rate_limit_enabled() -> bool:
+    return _flag_enabled("ACTUS_RATE_LIMIT_ENABLED", default=_is_production())
+
+
+def _env_int(name: str, default: int, *, minimum: int = 1) -> int:
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return default
+    try:
+        return max(minimum, int(raw))
+    except ValueError:
+        return default
+
+
+def _rate_limit_window_sec() -> int:
+    return _env_int("ACTUS_RATE_LIMIT_WINDOW_SEC", 60)
+
+
+def _rate_limit_scope(path: str) -> str | None:
+    normalized = str(path or "")
+    if normalized == "/api/ask":
+        return "ask"
+    if normalized == "/api/health/openrouter":
+        return "openrouter_health"
+    if normalized.startswith("/rag"):
+        return "rag"
+    return None
+
+
+def _rate_limit_limit(scope: str) -> int:
+    if scope == "ask":
+        return _env_int("ACTUS_RATE_LIMIT_ASK_PER_MIN", 30)
+    if scope == "openrouter_health":
+        return _env_int("ACTUS_RATE_LIMIT_OPENROUTER_HEALTH_PER_MIN", 5)
+    if scope == "rag":
+        return _env_int("ACTUS_RATE_LIMIT_RAG_PER_MIN", 20)
+    return 0
+
+
+def _request_identity(request: Request) -> str:
+    provided = request.headers.get("x-api-key")
+    if not provided:
+        auth = request.headers.get("authorization", "")
+        if auth.lower().startswith("bearer "):
+            provided = auth.split(" ", 1)[1].strip()
+    if provided:
+        digest = hashlib.sha256(provided.encode("utf-8")).hexdigest()[:16]
+        return f"api_key:{digest}"
+
+    forwarded = request.headers.get("x-forwarded-for", "").split(",", 1)[0].strip()
+    if forwarded:
+        return f"ip:{forwarded}"
+
+    client = getattr(request, "client", None)
+    host = getattr(client, "host", None) if client else None
+    return f"ip:{host or 'unknown'}"
+
+
+def _consume_rate_limit(scope: str, identity: str) -> tuple[bool, int]:
+    limit = _rate_limit_limit(scope)
+    if limit <= 0:
+        return True, 0
+
+    now = time.monotonic()
+    window = float(_rate_limit_window_sec())
+    key = (scope, identity)
+    with _RATE_LIMIT_LOCK:
+        bucket = _RATE_LIMIT_BUCKETS.setdefault(key, deque())
+        while bucket and (now - bucket[0]) >= window:
+            bucket.popleft()
+        if len(bucket) >= limit:
+            retry_after = max(1, math.ceil(window - (now - bucket[0])))
+            return False, retry_after
+        bucket.append(now)
+        return True, 0
 
 
 def _infer_intent_id(query: str, meta: Dict[str, Any] | None) -> str | None:
@@ -167,6 +359,8 @@ def _safe_log_quality_event(
         "suggestion_count": len(payload.get("suggestions", []))
         if isinstance(payload.get("suggestions"), list)
         else 0,
+        "query_length": len(str(query or "")),
+        "query_logging": "raw" if _log_raw_queries_enabled() else "fingerprint",
     }
     auto_mode = payload.get("auto_mode")
     if isinstance(auto_mode, dict) and auto_mode.get("enabled"):
@@ -182,12 +376,12 @@ def _safe_log_quality_event(
     try:
         record_quality_event(
             {
-                "query": query,
+                "query": _quality_query_value(query),
                 "intent_id": _infer_intent_id(query, payload),
                 "provider": provider,
                 "latency_ms": elapsed_ms,
                 "ok": ok,
-                "error": error,
+                "error": _client_safe_error(error) if error else None,
                 "result_count": len(rows),
                 "has_ticket_analysis": isinstance(payload.get("ticket_analysis"), dict),
                 "has_item_analysis": isinstance(payload.get("item_analysis"), dict),
@@ -227,7 +421,7 @@ def _ask_response(
     )
     payload: Dict[str, Any] = {"text": text, "rows": row_list, "meta": meta_obj}
     if error:
-        payload["error"] = error
+        payload["error"] = _client_safe_error(error)
     return payload
 
 
@@ -409,16 +603,22 @@ def health() -> Dict[str, str]:
     return {"status": "ok"}
 
 
-@APP.get("/api/health/openrouter")
+@APP.get("/api/health/openrouter", dependencies=[Depends(require_api_key)])
 def health_openrouter() -> Dict[str, str]:
     try:
         _openrouter_call("ping")
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
+        raise HTTPException(
+            status_code=500,
+            detail=_client_safe_detail(
+                str(exc),
+                generic="Provider health check failed.",
+            ),
+        ) from exc
     return {"status": "ok"}
 
 
-@APP.get("/api/user-context")
+@APP.get("/api/user-context", dependencies=[Depends(require_api_key)])
 def user_context(email: str | None = None) -> Dict[str, Any]:
     if not email:
         raise HTTPException(status_code=400, detail="email is required")
@@ -426,13 +626,25 @@ def user_context(email: str | None = None) -> Dict[str, Any]:
     try:
         _ensure_firebase_app()
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
+        raise HTTPException(
+            status_code=500,
+            detail=_client_safe_detail(
+                str(exc),
+                generic="User context backend is unavailable.",
+            ),
+        ) from exc
 
     try:
         ref = db.reference("user_roles")
         snapshot = ref.order_by_child("email").equal_to(email).get() or {}
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"RTDB query failed: {exc}") from exc
+        raise HTTPException(
+            status_code=500,
+            detail=_client_safe_detail(
+                f"RTDB query failed: {exc}",
+                generic="User context lookup failed.",
+            ),
+        ) from exc
     if not snapshot:
         return {"email": email}
 
@@ -472,7 +684,7 @@ def _shutdown() -> None:
     _RAG_REBUILD_STOP.set()
 
 
-@APP.post("/api/ask")
+@APP.post("/api/ask", dependencies=[Depends(require_api_key)])
 def ask(payload: AskRequest) -> Dict[str, Any]:
     t0 = time.perf_counter()
     query = payload.query.strip()

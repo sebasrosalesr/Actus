@@ -6,9 +6,10 @@ from typing import Any, Dict, List, Optional
 
 import traceback
 import re
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
+from app.api.security import client_safe_detail, require_api_key, should_log_tracebacks
 from app.rag.next_action_engine import evaluate_next_action, evaluate_next_action_with_trace
 from app.rag.new_design.service import get_runtime_service
 from app.rag.store import get_rag_store
@@ -719,7 +720,18 @@ def enrich_next_action(result: Dict[str, Any]) -> Dict[str, Any]:
     return result
 
 
-router = APIRouter()
+router = APIRouter(dependencies=[Depends(require_api_key)])
+
+
+def _server_error(exc: Exception, *, generic: str) -> HTTPException:
+    if should_log_tracebacks():
+        traceback.print_exc()
+    else:
+        print(f"[rag-api] {generic} ({type(exc).__name__})")
+    return HTTPException(
+        status_code=500,
+        detail=client_safe_detail(f"{type(exc).__name__}: {exc}", generic=generic),
+    )
 
 class TicketRefsResponse(BaseModel):
     ticket_id: str
@@ -772,18 +784,21 @@ class NewDesignTicketAnalysisRequest(BaseModel):
 
 @router.get("/rag/health")
 def rag_health() -> dict[str, Any]:
-    store = get_rag_store()
     try:
-        return {
-            "provider": store.provider_name(),
-            "has_data": store.has_data(),
-            "stats": store.stats(),
-        }
-    finally:
+        store = get_rag_store()
         try:
-            store.close()
-        except Exception:
-            pass
+            return {
+                "provider": store.provider_name(),
+                "has_data": store.has_data(),
+                "stats": store.stats(),
+            }
+        finally:
+            try:
+                store.close()
+            except Exception:
+                pass
+    except Exception as exc:
+        raise _server_error(exc, generic="RAG health check failed.")
 
 
 @router.get("/rag/ticket/{ticket_id}/refs", response_model=TicketRefsResponse)
@@ -830,7 +845,7 @@ def rag_ticket_refs(ticket_id: str):
             "item_numbers": sorted(item_numbers),
         }
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=str(exc))
+        raise _server_error(exc, generic="Ticket reference lookup failed.")
     finally:
         try:
             store.close()
@@ -879,8 +894,7 @@ def rag_new_search(payload: NewDesignSearchRequest) -> dict[str, Any]:
         service = get_runtime_service(refresh=payload.refresh)
         return service.search(payload.query, top_k=payload.top_k)
     except Exception as exc:
-        traceback.print_exc()
-        raise HTTPException(status_code=500, detail=f"{type(exc).__name__}: {exc}")
+        raise _server_error(exc, generic="RAG search failed.")
 
 
 @router.post("/rag/new/answer")
@@ -893,8 +907,7 @@ def rag_new_answer(payload: NewDesignAnswerRequest) -> dict[str, Any]:
             max_tickets_in_answer=payload.max_tickets_in_answer,
         )
     except Exception as exc:
-        traceback.print_exc()
-        raise HTTPException(status_code=500, detail=f"{type(exc).__name__}: {exc}")
+        raise _server_error(exc, generic="RAG answer generation failed.")
 
 
 @router.post("/rag/new/refresh")
@@ -916,8 +929,7 @@ def rag_new_refresh(payload: Optional[NewDesignRefreshRequest] = None) -> dict[s
 
         return response
     except Exception as exc:
-        traceback.print_exc()
-        raise HTTPException(status_code=500, detail=f"{type(exc).__name__}: {exc}")
+        raise _server_error(exc, generic="RAG refresh failed.")
 
 
 @router.post("/rag/new/item-analysis")
@@ -931,8 +943,7 @@ def rag_new_item_analysis(payload: NewDesignItemAnalysisRequest) -> dict[str, An
     except HTTPException:
         raise
     except Exception as exc:
-        traceback.print_exc()
-        raise HTTPException(status_code=500, detail=f"{type(exc).__name__}: {exc}")
+        raise _server_error(exc, generic="Item analysis failed.")
 
 
 @router.post("/rag/new/customer-analysis")
@@ -962,8 +973,7 @@ def rag_new_customer_analysis(payload: NewDesignCustomerAnalysisRequest) -> dict
     except HTTPException:
         raise
     except Exception as exc:
-        traceback.print_exc()
-        raise HTTPException(status_code=500, detail=f"{type(exc).__name__}: {exc}")
+        raise _server_error(exc, generic="Customer analysis failed.")
 
 
 @router.post("/rag/new/ticket-analysis")
@@ -982,5 +992,4 @@ def rag_new_ticket_analysis(payload: NewDesignTicketAnalysisRequest) -> dict[str
     except HTTPException:
         raise
     except Exception as exc:
-        traceback.print_exc()
-        raise HTTPException(status_code=500, detail=f"{type(exc).__name__}: {exc}")
+        raise _server_error(exc, generic="Ticket analysis failed.")

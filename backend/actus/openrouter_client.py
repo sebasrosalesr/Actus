@@ -6,6 +6,19 @@ import urllib.request
 from typing import Any, Dict, List, Optional
 
 
+def _is_production() -> bool:
+    raw = os.environ.get("ACTUS_ENV", "").strip().lower()
+    return raw in {"production", "prod"}
+
+
+def _debug_enabled() -> bool:
+    return os.environ.get("ACTUS_OPENROUTER_DEBUG", "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _client_safe_failure(detail: str, *, generic: str) -> str:
+    return detail if _debug_enabled() or not _is_production() else generic
+
+
 def openrouter_chat(messages: List[Dict[str, str]], model: Optional[str] = None) -> str:
     api_key = os.environ.get("ACTUS_OPENROUTER_API_KEY") or os.environ.get("OPENROUTER_API_KEY")
     if not api_key:
@@ -19,7 +32,7 @@ def openrouter_chat(messages: List[Dict[str, str]], model: Optional[str] = None)
         "model": resolved_model,
         "messages": messages,
     }
-    debug = os.environ.get("ACTUS_OPENROUTER_DEBUG", "").strip().lower() in {"1", "true", "yes", "on"}
+    debug = _debug_enabled()
     if debug:
         print(f"[openrouter] request model={resolved_model} messages={len(messages)}")
     req = urllib.request.Request(
@@ -44,9 +57,19 @@ def openrouter_chat(messages: List[Dict[str, str]], model: Optional[str] = None)
             if exc.code == 429 and attempt < max_retries:
                 time.sleep(0.5 * (2 ** attempt))
                 continue
-            raise RuntimeError(f"OpenRouter request failed: {detail}") from exc
+            raise RuntimeError(
+                _client_safe_failure(
+                    f"OpenRouter request failed: {detail}",
+                    generic=f"OpenRouter request failed (status {exc.code}).",
+                )
+            ) from exc
         except urllib.error.URLError as exc:
-            raise RuntimeError(f"OpenRouter request failed: {exc}") from exc
+            raise RuntimeError(
+                _client_safe_failure(
+                    f"OpenRouter request failed: {exc}",
+                    generic="OpenRouter request failed.",
+                )
+            ) from exc
 
     data = json.loads(raw)
     if debug:

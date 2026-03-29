@@ -3,9 +3,15 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
+import threading
+import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, Iterable, Optional
+
+
+_RETENTION_LOCK = threading.Lock()
+_LAST_PRUNE_BY_PATH: dict[str, float] = {}
 
 
 def _default_db_path() -> Path:
@@ -26,6 +32,72 @@ def _connect(db_path: Optional[str] = None) -> sqlite3.Connection:
     conn = sqlite3.connect(path)
     conn.row_factory = sqlite3.Row
     return conn
+
+
+def _is_production() -> bool:
+    raw = os.environ.get("ACTUS_ENV", "").strip().lower()
+    return raw in {"production", "prod"}
+
+
+def _quality_retention_days() -> int | None:
+    raw = os.environ.get("ACTUS_QUALITY_RETENTION_DAYS", "").strip()
+    if raw:
+        try:
+            value = int(raw)
+            return value if value > 0 else None
+        except ValueError:
+            return 90 if _is_production() else None
+    return 90 if _is_production() else None
+
+
+def _prune_interval_sec() -> int:
+    raw = os.environ.get("ACTUS_QUALITY_PRUNE_INTERVAL_SEC", "").strip()
+    if raw:
+        try:
+            return max(0, int(raw))
+        except ValueError:
+            return 3600
+    return 3600
+
+
+def prune_quality_events(
+    *,
+    now_utc: Optional[datetime] = None,
+    db_path: Optional[str] = None,
+) -> int:
+    retention_days = _quality_retention_days()
+    if retention_days is None:
+        return 0
+
+    now = now_utc or datetime.now(UTC)
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=UTC)
+    cutoff = (now - timedelta(days=retention_days)).isoformat()
+    with _connect(db_path) as conn:
+        cur = conn.execute(
+            """
+            DELETE FROM quality_events
+            WHERE ts_utc < ?
+            """,
+            (cutoff,),
+        )
+        return int(cur.rowcount or 0)
+
+
+def _maybe_prune_quality_events(db_path: Optional[str] = None) -> None:
+    retention_days = _quality_retention_days()
+    if retention_days is None:
+        return
+
+    interval_sec = _prune_interval_sec()
+    db_key = str(resolve_db_path(db_path))
+    now_mono = time.monotonic()
+    with _RETENTION_LOCK:
+        last = _LAST_PRUNE_BY_PATH.get(db_key, 0.0)
+        if interval_sec > 0 and (now_mono - last) < interval_sec:
+            return
+        _LAST_PRUNE_BY_PATH[db_key] = now_mono
+    prune_quality_events(db_path=db_path)
 
 
 def init_quality_db(db_path: Optional[str] = None) -> None:
@@ -61,6 +133,7 @@ def init_quality_db(db_path: Optional[str] = None) -> None:
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_quality_events_release ON quality_events(release_tag)"
         )
+    _maybe_prune_quality_events(db_path)
 
 
 def record_quality_event(event: Dict[str, Any], db_path: Optional[str] = None) -> None:
@@ -279,4 +352,3 @@ def quality_trends(
         "range": {"start": start.isoformat(), "end": now.isoformat()},
         "points": points,
     }
-

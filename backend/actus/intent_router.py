@@ -27,6 +27,8 @@ from actus.intents.system_updates import intent_system_updates, INTENT_ALIASES a
 from actus.intents.credit_ops_snapshot import intent_credit_ops_snapshot, INTENT_ALIASES as CREDIT_OPS_SNAPSHOT_ALIASES
 from actus.intents.credit_amount_plot import intent_credit_amount_plot, INTENT_ALIASES as CREDIT_AMOUNT_PLOT_ALIASES
 from actus.intents.credit_root_causes import intent_root_cause_summary, INTENT_ALIASES as CREDIT_ROOT_CAUSES_ALIASES
+from actus.intents.billing_queue_hotspots import intent_billing_queue_hotspots, INTENT_ALIASES as BILLING_QUEUE_HOTSPOTS_ALIASES
+from actus.intents.root_cause_rtn_timing import intent_root_cause_rtn_timing, INTENT_ALIASES as ROOT_CAUSE_RTN_TIMING_ALIASES
 from actus.intents.bulk_search import intent_bulk_search, INTENT_ALIASES as BULK_SEARCH_ALIASES
 from actus.intents.ticket_analysis import intent_ticket_analysis, INTENT_ALIASES as TICKET_ANALYSIS_ALIASES
 from actus.intents.item_analysis import intent_item_analysis, INTENT_ALIASES as ITEM_ANALYSIS_ALIASES
@@ -62,6 +64,8 @@ INTENTS: List[Callable[[str, pd.DataFrame], Optional[Tuple[str, Optional[pd.Data
     intent_stalled_tickets,
     intent_overall_summary,
     intent_root_cause_summary,
+    intent_root_cause_rtn_timing,
+    intent_billing_queue_hotspots,
     intent_top_accounts,
     intent_top_salesreps,
     intent_top_items,
@@ -90,6 +94,8 @@ INTENT_DEFS = [
     {"id": "stalled_tickets", "label": "Stalled tickets", "prefix": "stalled tickets", "func": intent_stalled_tickets, "aliases": STALLED_TICKETS_ALIASES},
     {"id": "overall_summary", "label": "Credit overview", "prefix": "credit overview", "func": intent_overall_summary, "aliases": OVERALL_SUMMARY_ALIASES},
     {"id": "credit_root_causes", "label": "Root causes", "prefix": "root causes", "func": intent_root_cause_summary, "aliases": CREDIT_ROOT_CAUSES_ALIASES},
+    {"id": "root_cause_rtn_timing", "label": "Root cause RTN timing", "prefix": "root cause rtn timing", "func": intent_root_cause_rtn_timing, "aliases": ROOT_CAUSE_RTN_TIMING_ALIASES},
+    {"id": "billing_queue_hotspots", "label": "Billing queue delays", "prefix": "billing queue delays", "func": intent_billing_queue_hotspots, "aliases": BILLING_QUEUE_HOTSPOTS_ALIASES},
     {"id": "top_accounts", "label": "Top accounts", "prefix": "top accounts", "func": intent_top_accounts, "aliases": TOP_ACCOUNTS_ALIASES},
     {"id": "top_salesreps", "label": "Top sales reps", "prefix": "top sales reps", "func": intent_top_salesreps, "aliases": TOP_SALESREPS_ALIASES},
     {"id": "top_items", "label": "Top items", "prefix": "top items", "func": intent_top_items, "aliases": TOP_ITEMS_ALIASES},

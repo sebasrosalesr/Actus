@@ -1,7 +1,11 @@
 import re
-import pandas as pd
-from datetime import datetime
+from typing import Any
 
+import pandas as pd
+
+from actus.intents._time_reasoning import enrich_time_reasoning
+from actus.intents.credit_ops_snapshot import _lookup_root_causes, _parse_window
+from actus.intents.system_updates import intent_system_updates
 from actus.utils.df_cleaning import coerce_date
 from actus.utils.formatting import format_money
 
@@ -12,124 +16,440 @@ INTENT_ALIASES = [
 ]
 
 
-def intent_overall_summary(query: str, df: pd.DataFrame) -> str | None:
-    """
-    Handle high-level questions like:
-      - "Actus, give me a credit overview"
-      - "SkyBar, summary of open credits"
-      - "What's the current credit picture?"
-    """
-    q_low = query.lower()
+def _has_rtn(series: pd.Series) -> pd.Series:
+    values = series.fillna("").astype(str).str.strip().str.upper()
+    return ~values.isin({"", "NAN", "NONE", "NULL", "NA"})
 
-    # Must sound like a summary / overview kind of question
+
+def _latest_status(value: object) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return "N/A"
+    matches = list(
+        re.finditer(r"(?:\[)?(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\]?", text)
+    )
+    if matches:
+        start = matches[-1].start()
+        return text[start:].strip()
+    return text
+
+
+def _latest_status_datetime(value: object) -> pd.Timestamp:
+    text = str(value or "").strip()
+    if not text:
+        return pd.NaT
+    matches = list(
+        re.finditer(r"(?:\[)?(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\]?", text)
+    )
+    if not matches:
+        return pd.NaT
+    return pd.to_datetime(matches[-1].group(1), errors="coerce")
+
+
+def _top_amount_groups(frame: pd.DataFrame, column: str, *, limit: int = 3) -> list[dict[str, Any]]:
+    if column not in frame.columns or frame.empty:
+        return []
+    grouped = (
+        frame.groupby(column, dropna=False)["Credit Request Total_num"]
+        .sum()
+        .sort_values(ascending=False)
+        .head(limit)
+    )
+    out: list[dict[str, Any]] = []
+    for key, amount in grouped.items():
+        label = str(key or "N/A").strip() or "N/A"
+        out.append(
+            {
+                "label": label,
+                "credit_total": float(amount or 0.0),
+            }
+        )
+    return out
+
+
+def _root_cause_summary(frame: pd.DataFrame, *, limit: int = 3) -> list[dict[str, Any]]:
+    if frame.empty or "Ticket Number" not in frame.columns:
+        return []
+
+    causes = _lookup_root_causes(
+        frame["Ticket Number"],
+        frame.get("Invoice Number"),
+        frame.get("Item Number"),
+    )
+    working = frame.copy()
+    working["Root Cause"] = (
+        causes.get("Root Causes (Primary)", pd.Series(index=working.index, dtype="object"))
+        .fillna("")
+        .astype(str)
+        .str.strip()
+    )
+    working = working[working["Root Cause"].ne("")]
+    if working.empty:
+        return []
+
+    grouped = (
+        working.groupby("Root Cause", dropna=False)
+        .agg(
+            record_count=("Root Cause", "size"),
+            credit_total=("Credit Request Total_num", "sum"),
+        )
+        .sort_values(["record_count", "credit_total"], ascending=[False, False])
+        .head(limit)
+    )
+    out: list[dict[str, Any]] = []
+    for root_cause, row in grouped.iterrows():
+        out.append(
+            {
+                "root_cause": str(root_cause),
+                "record_count": int(row["record_count"]),
+                "credit_total": float(row["credit_total"] or 0.0),
+            }
+        )
+    return out
+
+
+def _time_reasoning_metrics(open_df: pd.DataFrame) -> dict[str, Any]:
+    if open_df.empty:
+        return {
+            "avg_days_open": 0.0,
+            "avg_days_since_last_status": 0.0,
+            "billing_queue_delay_count": 0,
+            "billing_queue_delay_total": 0.0,
+            "stale_investigation_count": 0,
+            "stale_investigation_total": 0.0,
+        }
+
+    enriched = open_df.copy()
+    today = pd.Timestamp.today().normalize()
+    enriched["Latest Status"] = enriched.get("Status", pd.Series(index=enriched.index, dtype="object")).map(_latest_status)
+    enriched["Last Status Date"] = enriched.get("Status", pd.Series(index=enriched.index, dtype="object")).map(_latest_status_datetime)
+    enriched["Days Open"] = (today - enriched["Date"]).dt.days
+    enriched["Days Since Last Status"] = (today - enriched["Last Status Date"]).dt.days
+    enriched["Days Since Last Status"] = enriched["Days Since Last Status"].fillna(enriched["Days Open"])
+    enriched["Credit_Request_Total"] = enriched["Credit Request Total_num"]
+    enriched["Days_Open"] = enriched["Days Open"]
+    enriched["Days_Since_Last_Status"] = enriched["Days Since Last Status"]
+    enriched["Last_Status_Message"] = enriched["Latest Status"].astype(str)
+
+    enriched = enrich_time_reasoning(enriched)
+
+    def _intent_totals(intent_id: str) -> tuple[int, float]:
+        subset = enriched[enriched["Follow_Up_Intent"] == intent_id]
+        return int(len(subset.index)), float(subset["Credit Request Total_num"].sum())
+
+    billing_count, billing_total = _intent_totals("I04_CHECK_BILLING_QUEUE")
+    stale_count, stale_total = _intent_totals("I03_ESCALATE_STALE_INVESTIGATION")
+
+    return {
+        "avg_days_open": float(enriched["Days Open"].mean() or 0.0),
+        "avg_days_since_last_status": float(enriched["Days Since Last Status"].mean() or 0.0),
+        "billing_queue_delay_count": billing_count,
+        "billing_queue_delay_total": billing_total,
+        "stale_investigation_count": stale_count,
+        "stale_investigation_total": stale_total,
+    }
+
+
+def _naive_ts(value: pd.Timestamp | None) -> pd.Timestamp | None:
+    if value is None or pd.isna(value):
+        return None
+    ts = pd.Timestamp(value)
+    if ts.tzinfo is not None:
+        return ts.tz_localize(None)
+    return ts
+
+
+def _window_range_label(start: pd.Timestamp | None, end: pd.Timestamp | None) -> str | None:
+    start_ts = _naive_ts(start)
+    end_ts = _naive_ts(end)
+    if start_ts is None:
+        return None
+    if end_ts is None:
+        end_ts = pd.Timestamp.today().normalize()
+    return f"{start_ts.date()} → {end_ts.date()}"
+
+
+def _ops_snapshot_suggestion(start: pd.Timestamp | None, end: pd.Timestamp | None) -> dict[str, str] | None:
+    start_ts = _naive_ts(start)
+    end_ts = _naive_ts(end)
+    if start_ts is None:
+        return None
+    if end_ts is None:
+        end_ts = pd.Timestamp.today().normalize()
+    start_text = start_ts.strftime("%Y-%m-%d")
+    end_text = end_ts.strftime("%Y-%m-%d")
+    window = f"{start_text} → {end_text}"
+    return {
+        "id": "credit_ops_snapshot",
+        "label": f"Credit ops snapshot ({window})",
+        "prefix": f"credit ops snapshot from {start_text} to {end_text}",
+    }
+
+
+def _credit_amount_plot_suggestion(
+    start: pd.Timestamp | None,
+    end: pd.Timestamp | None,
+) -> dict[str, str]:
+    start_ts = _naive_ts(start)
+    end_ts = _naive_ts(end)
+    if start_ts is None:
+        return {
+            "id": "credit_amount_plot",
+            "label": "Credit amount chart",
+            "prefix": "credit amount chart",
+        }
+    if end_ts is None:
+        end_ts = pd.Timestamp.today().normalize()
+    start_text = start_ts.strftime("%Y-%m-%d")
+    end_text = end_ts.strftime("%Y-%m-%d")
+    window = f"{start_text} → {end_text}"
+    return {
+        "id": "credit_amount_plot",
+        "label": f"Credit amount chart ({window})",
+        "prefix": f"credit amount chart from {start_text} to {end_text}",
+    }
+
+
+def _rtn_updates_query(start: pd.Timestamp | None, end: pd.Timestamp | None) -> str:
+    start_ts = _naive_ts(start)
+    end_ts = _naive_ts(end)
+    if start_ts is None:
+        return "system rtn updates analysis"
+    if end_ts is None:
+        end_ts = pd.Timestamp.today().normalize()
+    return (
+        "system rtn updates analysis from "
+        f"{start_ts.strftime('%Y-%m-%d')} to {end_ts.strftime('%Y-%m-%d')}"
+    )
+
+
+def _credited_in_period_metrics(
+    df: pd.DataFrame,
+    *,
+    start: pd.Timestamp | None,
+    end: pd.Timestamp | None,
+) -> tuple[dict[str, Any], list[dict[str, str]]]:
+    empty_payload = {
+        "credited_record_count": 0,
+        "credited_credit_total": 0.0,
+        "credited_event_count": 0,
+        "credited_event_credit_total": 0.0,
+        "system_record_count": 0,
+        "system_credit_total": 0.0,
+        "manual_record_count": 0,
+        "manual_credit_total": 0.0,
+        "records_with_both_sources": 0,
+        "avg_days_to_rtn_assignment": 0.0,
+        "largest_system_batch_count": 0,
+        "largest_system_batch_date": "N/A",
+        "largest_system_batch_credit_total": 0.0,
+        "largest_manual_batch_count": 0,
+        "largest_manual_batch_date": "N/A",
+        "largest_manual_batch_credit_total": 0.0,
+    }
+
+    response = intent_system_updates(_rtn_updates_query(start, end), df)
+    if not isinstance(response, tuple) or len(response) != 3:
+        return empty_payload, []
+
+    _text, _rows, meta = response
+    if not isinstance(meta, dict):
+        return empty_payload, []
+
+    summary = meta.get("system_updates_summary")
+    csv_rows = meta.get("csv_rows")
+    if not isinstance(summary, dict) or not isinstance(csv_rows, pd.DataFrame) or csv_rows.empty:
+        return empty_payload, meta.get("suggestions") if isinstance(meta.get("suggestions"), list) else []
+
+    events = csv_rows.copy()
+    events["Update Event Time"] = pd.to_datetime(events.get("Update Event Time"), errors="coerce")
+    events["Credit Request Total"] = pd.to_numeric(events.get("Credit Request Total"), errors="coerce").fillna(0.0)
+    events["Days To RTN Update"] = pd.to_numeric(events.get("Days To RTN Update"), errors="coerce")
+    events["Update Source"] = events.get("Update Source", pd.Series(index=events.index, dtype="object")).fillna("").astype(str)
+
+    dedupe_subset = [
+        column
+        for column in [
+            "Ticket Number",
+            "Invoice Number",
+            "Item Number",
+            "Customer Number",
+            "RTN_CR_No",
+        ]
+        if column in events.columns
+    ]
+    if dedupe_subset:
+        latest = (
+            events.sort_values("Update Event Time", ascending=True)
+            .drop_duplicates(subset=dedupe_subset, keep="last")
+            .copy()
+        )
+    else:
+        latest = events.copy()
+
+    valid_days = pd.to_numeric(events["Days To RTN Update"], errors="coerce").dropna()
+    records_with_both_sources = 0
+    if dedupe_subset:
+        source_counts = (
+            events.groupby(dedupe_subset, dropna=False)["Update Source"]
+            .nunique()
+        )
+        records_with_both_sources = int((source_counts > 1).sum())
+
+    payload = {
+        "credited_record_count": int(len(latest.index)),
+        "credited_credit_total": float(latest["Credit Request Total"].sum()),
+        "credited_event_count": int(summary.get("preview_total_records") or len(events.index)),
+        "credited_event_credit_total": float(events["Credit Request Total"].sum()),
+        "system_record_count": int(summary.get("total_records") or 0),
+        "system_credit_total": float(summary.get("credit_total") or 0.0),
+        "manual_record_count": int(summary.get("manual_record_count") or 0),
+        "manual_credit_total": float(summary.get("manual_credit_total") or 0.0),
+        "records_with_both_sources": records_with_both_sources,
+        "avg_days_to_rtn_assignment": float(valid_days.mean() or 0.0) if not valid_days.empty else 0.0,
+        "largest_system_batch_count": int(summary.get("largest_batch_count") or 0),
+        "largest_system_batch_date": str(summary.get("largest_batch_date") or "N/A"),
+        "largest_system_batch_credit_total": float(summary.get("largest_batch_credit_total") or 0.0),
+        "largest_manual_batch_count": int(summary.get("manual_largest_batch_count") or 0),
+        "largest_manual_batch_date": str(summary.get("manual_largest_batch_date") or "N/A"),
+        "largest_manual_batch_credit_total": float(summary.get("manual_largest_batch_credit_total") or 0.0),
+    }
+    suggestions = meta.get("suggestions") if isinstance(meta.get("suggestions"), list) else []
+    return payload, suggestions
+
+
+def intent_overall_summary(query: str, df: pd.DataFrame):
+    q_low = query.lower()
     keywords_any = ["summary", "overview", "picture", "status", "how are credits", "credit overview"]
     if not any(k in q_low for k in keywords_any):
         return None
 
-    dv = df.copy()
+    if df.empty:
+        return "I don't see any credit records to summarize right now."
 
-    # --- Date handling ---
+    dv = df.copy()
     if "Date" in dv.columns:
         dv["Date"] = coerce_date(dv["Date"])
     else:
         dv["Date"] = pd.NaT
 
-    today = pd.Timestamp.today().normalize()
-    this_month_start = today.replace(day=1)
-
-    # --- Base metrics ---
-    total_records = len(dv)
-
     if "Credit Request Total" in dv.columns:
-        dv["Credit Request Total_num"] = pd.to_numeric(
-            dv["Credit Request Total"], errors="coerce"
-        )
-        total_amount = dv["Credit Request Total_num"].sum()
-        total_amount_str = format_money(total_amount)
+        dv["Credit Request Total_num"] = pd.to_numeric(dv["Credit Request Total"], errors="coerce").fillna(0.0)
     else:
-        dv["Credit Request Total_num"] = pd.NA
-        total_amount_str = "N/A"
+        dv["Credit Request Total_num"] = 0.0
 
-    # --- Open tickets without RTN_CR_No ---
-    open_mask = pd.Series([True] * len(dv))
-    if "Status" in dv.columns:
-        # If you ever add closed markers, you can filter them out here
-        pass
+    start, end, window_label = _parse_window(query)
+    scope = dv.copy()
+    start_naive = _naive_ts(start)
+    end_naive = _naive_ts(end)
 
-    rtn_col = "RTN_CR_No"
-    if rtn_col in dv.columns:
-        rtn_raw = dv[rtn_col].astype(str).str.strip().str.upper()
-        no_rtn_mask = (rtn_raw == "") | rtn_raw.isin(["NAN", "NONE", "NULL"])
+    if start_naive is not None and end_naive is not None and "Date" in scope.columns:
+        mask = scope["Date"].between(start_naive, end_naive)
+        scope = scope[mask].copy()
+    elif start_naive is not None and "Date" in scope.columns:
+        scope = scope[scope["Date"] >= start_naive].copy()
+
+    if scope.empty:
+        label = window_label or "that window"
+        return f"I couldn't find any credit records for {label}."
+
+    resolved_window = _window_range_label(start_naive, end_naive) or window_label or "current dataset"
+
+    if "RTN_CR_No" in scope.columns:
+        open_mask = ~_has_rtn(scope["RTN_CR_No"])
     else:
-        no_rtn_mask = pd.Series([False] * len(dv))
+        open_mask = pd.Series(True, index=scope.index)
 
-    open_no_rtn = dv[open_mask & no_rtn_mask].copy()
-    open_count = len(open_no_rtn)
-    open_amount = open_no_rtn["Credit Request Total_num"].sum(skipna=True)
-    open_amount_str = format_money(open_amount) if pd.notna(open_amount) else "N/A"
+    open_df = scope[open_mask].copy()
+    open_count = int(len(open_df.index))
+    open_total = float(open_df["Credit Request Total_num"].sum())
 
-    # --- This month activity ---
-    if "Date" in dv.columns:
-        month_mask = dv["Date"].between(this_month_start, today)
-        month_df = dv[month_mask].copy()
-    else:
-        month_df = dv.iloc[0:0].copy()
+    time_metrics = _time_reasoning_metrics(open_df.dropna(subset=["Date"]).copy()) if "Date" in open_df.columns else _time_reasoning_metrics(pd.DataFrame())
+    credited_metrics, rtn_suggestions = _credited_in_period_metrics(dv, start=start_naive, end=end_naive)
 
-    month_count = len(month_df)
-    month_amount = month_df["Credit Request Total_num"].sum(skipna=True)
-    month_amount_str = format_money(month_amount) if pd.notna(month_amount) else "N/A"
+    top_customers = _top_amount_groups(scope, "Customer Number")
+    top_items = _top_amount_groups(scope, "Item Number")
+    top_root_causes = _root_cause_summary(scope)
 
-    # Top customers this month
-    top_lines = []
-    if month_count > 0 and "Customer Number" in month_df.columns:
-        top_cust = (
-            month_df.groupby("Customer Number", dropna=True)["Credit Request Total_num"]
-            .sum()
-            .sort_values(ascending=False)
-            .head(5)
+    message_lines = [
+        "📊 **Credit Overview**",
+        f"- Window: **{resolved_window}**",
+        "",
+        "💸 **Liability Snapshot**",
+        f"- Open exposure: **{format_money(open_total)}** across **{open_count}** record(s)",
+        "",
+        "⏱️ **Time reasoning**",
+        f"- Avg days open: **{time_metrics['avg_days_open']:.1f}**",
+        f"- Avg days since last update: **{time_metrics['avg_days_since_last_status']:.1f}**",
+        f"- Billing queue delay: **{time_metrics['billing_queue_delay_count']}** record(s) / **{format_money(time_metrics['billing_queue_delay_total'])}**",
+        f"- Stale investigation: **{time_metrics['stale_investigation_count']}** record(s) / **{format_money(time_metrics['stale_investigation_total'])}**",
+        "",
+        "✅ **What Was Credited In Period**",
+        f"- Unique credited records in period: **{format_money(credited_metrics['credited_credit_total'])}** across **{credited_metrics['credited_record_count']}** record(s)",
+        f"- RTN update events captured: **{credited_metrics['credited_event_count']}** event(s) / **{format_money(credited_metrics['credited_event_credit_total'])}**",
+        f"- System-updated RTN events: **{credited_metrics['system_record_count']}** event(s) / **{format_money(credited_metrics['system_credit_total'])}**",
+        f"- Manual RTN-provided events: **{credited_metrics['manual_record_count']}** event(s) / **{format_money(credited_metrics['manual_credit_total'])}**",
+        f"- Records with both system and manual RTN activity: **{credited_metrics['records_with_both_sources']}**",
+        f"- Avg days from entry to RTN assignment: **{credited_metrics['avg_days_to_rtn_assignment']:.1f}**",
+    ]
+
+    if credited_metrics["largest_system_batch_count"] > 0:
+        message_lines.append(
+            f"- Largest system batch: **{credited_metrics['largest_system_batch_count']}** record(s) on **{credited_metrics['largest_system_batch_date']}** / **{format_money(credited_metrics['largest_system_batch_credit_total'])}**"
         )
-        for cust, amt in top_cust.items():
-            top_lines.append(f"- **{cust}** — {format_money(amt)} this month")
-
-    lines = []
-
-    lines.append("📊 **Overall Credit Overview**")
-    lines.append("")
-    lines.append(f"- Total records in dataset: **{total_records}**")
-    lines.append(f"- Total `Credit Request Total`: **{total_amount_str}**")
-    lines.append("")
-    lines.append("🧾 **Open tickets without a credit number (RTN_CR_No)**")
-    lines.append(f"- Count: **{open_count}**")
-    lines.append(f"- Sum of `Credit Request Total`: **{open_amount_str}**")
-    lines.append("")
-    lines.append(
-        f"📅 **This month ({this_month_start.date()} → {today.date()})**"
-    )
-    lines.append(f"- Credit records: **{month_count}**")
-    lines.append(f"- Sum of `Credit Request Total`: **{month_amount_str}**")
-
-    if top_lines:
-        lines.append("")
-        lines.append("🏢 **Top customers by credit this month**")
-        lines.extend(top_lines)
-
-    # Optional: most recent 5 credits this month
-    if month_count > 0:
-        lines.append("")
-        lines.append("🕒 **Most recent credits this month (up to 5):**")
-        month_sample = (
-            month_df.sort_values("Date", ascending=False)
-            .head(5)
+    if credited_metrics["largest_manual_batch_count"] > 0:
+        message_lines.append(
+            f"- Largest manual batch: **{credited_metrics['largest_manual_batch_count']}** record(s) on **{credited_metrics['largest_manual_batch_date']}** / **{format_money(credited_metrics['largest_manual_batch_credit_total'])}**"
         )
-        for _, r in month_sample.iterrows():
-            d = r.get("Date")
-            d_str = d.strftime("%Y-%m-%d") if isinstance(d, pd.Timestamp) else "Unknown date"
-            tnum = r.get("Ticket Number", "N/A")
-            cust = r.get("Customer Number", "N/A")
-            amt = r.get("Credit Request Total_num", None)
-            amt_str = format_money(amt) if pd.notna(amt) else "N/A"
-            lines.append(
-                f"- **{d_str}** — Ticket **{tnum}**, Customer **{cust}**, Amount: {amt_str}"
+
+    if top_customers:
+        message_lines.extend(["", "🏢 **Mix / Drivers**", "Top customers in scope:"])
+        for item in top_customers:
+            message_lines.append(f"- **{item['label']}** — {format_money(item['credit_total'])}")
+
+    if top_items:
+        message_lines.append("")
+        message_lines.append("Top items in scope:")
+        for item in top_items:
+            message_lines.append(f"- **{item['label']}** — {format_money(item['credit_total'])}")
+
+    if top_root_causes:
+        message_lines.append("")
+        message_lines.append("Main root causes in scope:")
+        for item in top_root_causes:
+            message_lines.append(
+                f"- **{item['root_cause']}** — **{item['record_count']}** record(s) / {format_money(item['credit_total'])}"
             )
 
-    return "\n".join(lines)
+    suggestions = []
+    ops_snapshot_suggestion = _ops_snapshot_suggestion(start_naive, end_naive)
+    if ops_snapshot_suggestion is not None:
+        suggestions.append(ops_snapshot_suggestion)
+    for item in rtn_suggestions:
+        if isinstance(item, dict) and item.get("prefix") and item not in suggestions:
+            suggestions.append(item)
+    plot_suggestion = _credit_amount_plot_suggestion(start_naive, end_naive)
+    if plot_suggestion not in suggestions:
+        suggestions.append(plot_suggestion)
+
+    meta = {
+        "show_table": False,
+        "suggestions": suggestions,
+        "overall_summary": {
+            "window": resolved_window,
+            "open_record_count": open_count,
+            "open_credit_total": open_total,
+            "avg_days_open": time_metrics["avg_days_open"],
+            "avg_days_since_last_status": time_metrics["avg_days_since_last_status"],
+            "billing_queue_delay_count": time_metrics["billing_queue_delay_count"],
+            "billing_queue_delay_total": time_metrics["billing_queue_delay_total"],
+            "stale_investigation_count": time_metrics["stale_investigation_count"],
+            "stale_investigation_total": time_metrics["stale_investigation_total"],
+            "credited_in_period": credited_metrics,
+            "top_customers": top_customers,
+            "top_items": top_items,
+            "top_root_causes": top_root_causes,
+        },
+    }
+
+    return "\n".join(message_lines), None, meta

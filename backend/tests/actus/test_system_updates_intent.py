@@ -45,7 +45,8 @@ class TestSystemUpdatesIntent(unittest.TestCase):
         self.assertIsNotNone(response)
         assert response is not None
         text, rows, meta = response
-        self.assertIn("showing the 3 most recent", text)
+        self.assertIn("System RTN updates analysis:", text)
+        self.assertIn("System-updated records with RTN/CR: **4**", text)
         self.assertEqual(4, len(rows))
         self.assertIn("Credit Request Total", rows.columns)
         self.assertEqual([10.0, 20.0, 30.0, 40.0], rows["Credit Request Total"].tolist())
@@ -53,17 +54,9 @@ class TestSystemUpdatesIntent(unittest.TestCase):
         self.assertIsInstance(summary, dict)
         assert isinstance(summary, dict)
         self.assertEqual(4, summary.get("total_records"))
-        self.assertEqual(4, summary.get("total_update_dates"))
-        self.assertEqual(3, summary.get("recent_limit"))
-        self.assertEqual(
-            [
-                {"date": "2026-03-19", "count": 1, "credit_total": 10.0, "credit_total_display": "$10.00"},
-                {"date": "2026-03-18", "count": 1, "credit_total": 20.0, "credit_total_display": "$20.00"},
-                {"date": "2026-03-17", "count": 1, "credit_total": 30.0, "credit_total_display": "$30.00"},
-                {"date": "2026-03-16", "count": 1, "credit_total": 40.0, "credit_total_display": "$40.00"},
-            ],
-            summary.get("batches"),
-        )
+        self.assertEqual(0, summary.get("manual_record_count"))
+        self.assertEqual(4, summary.get("batch_dates"))
+        self.assertEqual(10.0, float(rows.iloc[0]["Batch Credit Total"]))
 
 
 if __name__ == "__main__":

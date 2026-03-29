@@ -58,6 +58,8 @@ def _parse_window(query: str) -> tuple[pd.Timestamp | None, pd.Timestamp | None,
     q_low = query.lower()
     now = pd.Timestamp.now(tz=INDY_TZ)
     today = now.normalize()
+    quarter_start_month = ((today.month - 1) // 3) * 3 + 1
+    quarter_start = today.replace(month=quarter_start_month, day=1)
 
     m = re.search(r"\bbetween\s+(.+?)\s+(?:and|to)\s+(.+)", q_low)
     if m:
@@ -153,17 +155,26 @@ def _parse_window(query: str) -> tuple[pd.Timestamp | None, pd.Timestamp | None,
         start = today - pd.Timedelta(days=30)
         return start, now, "last 30 days"
 
-    if "this week" in q_low:
+    if "this week" in q_low or "current week" in q_low:
         start = today - pd.Timedelta(days=today.weekday())
-        return start, now, "this week"
+        return start, now, "current week" if "current week" in q_low else "this week"
 
-    if "this month" in q_low:
+    if "this month" in q_low or "current month" in q_low:
         start = today.replace(day=1)
-        return start, now, "this month"
+        return start, now, "current month" if "current month" in q_low else "this month"
 
-    if "this year" in q_low:
+    m = re.search(r"(?:last|past)\s+(\d+)\s+quarter", q_low)
+    if m:
+        quarters = int(m.group(1))
+        start = today - pd.DateOffset(months=quarters * 3)
+        return start, now, f"last {quarters} quarters"
+
+    if "this quarter" in q_low or "current quarter" in q_low:
+        return quarter_start, now, "current quarter" if "current quarter" in q_low else "this quarter"
+
+    if "this year" in q_low or "current year" in q_low:
         start = today.replace(month=1, day=1)
-        return start, now, "this year"
+        return start, now, "current year" if "current year" in q_low else "this year"
 
     m = re.search(r"\bon\s+([A-Za-z]{3,}\s+\d{1,2}(?:st|nd|rd|th)?)\b", q_low)
     if m:

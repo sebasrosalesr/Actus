@@ -5,7 +5,7 @@ import os
 import time
 import threading
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, Literal
 
 import pandas as pd
 from fastapi import FastAPI, HTTPException, Request
@@ -17,6 +17,7 @@ from starlette.responses import JSONResponse
 import firebase_admin
 from firebase_admin import credentials, db
 
+from actus.auto_mode import auto_mode_answer
 from actus.intent_router import actus_answer
 from actus.openrouter_client import openrouter_chat
 from scripts import build_rag_index
@@ -102,6 +103,7 @@ _RAG_WARMUP_LOCK = threading.Lock()
 
 class AskRequest(BaseModel):
     query: str
+    mode: Literal["manual", "auto"] = "manual"
 
 
 def _release_tag() -> str:
@@ -111,6 +113,9 @@ def _release_tag() -> str:
 
 def _infer_intent_id(query: str, meta: Dict[str, Any] | None) -> str | None:
     if isinstance(meta, dict):
+        auto_mode = meta.get("auto_mode")
+        if isinstance(auto_mode, dict) and auto_mode.get("enabled"):
+            return "auto_mode"
         direct = meta.get("intent") or meta.get("intent_id")
         if isinstance(direct, str) and direct.strip():
             return direct.strip()
@@ -163,6 +168,17 @@ def _safe_log_quality_event(
         if isinstance(payload.get("suggestions"), list)
         else 0,
     }
+    auto_mode = payload.get("auto_mode")
+    if isinstance(auto_mode, dict) and auto_mode.get("enabled"):
+        executed_intents = auto_mode.get("executed_intents")
+        compact_meta["auto_mode"] = True
+        compact_meta["subintent_count"] = int(auto_mode.get("subintent_count") or 0)
+        compact_meta["primary_intent"] = str(auto_mode.get("primary_intent") or "")
+        compact_meta["executed_intents"] = [
+            str(item.get("id") or "").strip()
+            for item in (executed_intents if isinstance(executed_intents, list) else [])
+            if isinstance(item, dict) and str(item.get("id") or "").strip()
+        ][:10]
     try:
         record_quality_event(
             {
@@ -460,11 +476,12 @@ def _shutdown() -> None:
 def ask(payload: AskRequest) -> Dict[str, Any]:
     t0 = time.perf_counter()
     query = payload.query.strip()
+    mode = payload.mode
     if not query:
         raise HTTPException(status_code=400, detail="Query is required.")
 
     llm_mode = os.environ.get("ACTUS_OPENROUTER_MODE", "").strip().lower()
-    if llm_mode == "always":
+    if mode != "auto" and llm_mode == "always":
         try:
             text = _openrouter_call(query)
             return _ask_response(
@@ -495,7 +512,10 @@ def ask(payload: AskRequest) -> Dict[str, Any]:
             provider="actus",
             error=str(exc),
         )
-    text, df_result, meta = actus_answer(query, df)
+    if mode == "auto":
+        text, df_result, meta = auto_mode_answer(query, df)
+    else:
+        text, df_result, meta = actus_answer(query, df)
     t2 = time.perf_counter()
     rows: list[dict[str, Any]] = []
     if df_result is not None:
@@ -515,7 +535,12 @@ def ask(payload: AskRequest) -> Dict[str, Any]:
         csv_df = csv_df.astype(object).where(pd.notnull(csv_df), None)
         meta = {**meta, "csv_rows": csv_df.to_dict(orient="records")}
 
-    if llm_mode == "fallback" and text.startswith("Right now I can help you with:") and not meta.get("is_help"):
+    if (
+        mode != "auto"
+        and llm_mode == "fallback"
+        and text.startswith("Right now I can help you with:")
+        and not meta.get("is_help")
+    ):
         try:
             llm_text = _openrouter_call(query)
             return _ask_response(

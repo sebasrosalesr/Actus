@@ -19,7 +19,7 @@
   }
 
   ::-webkit-scrollbar-thumb {
-    @apply bg-slate-800 rounded-full hover:bg-slate-700 transition-colors;
+    @apply bg-white/[0.08] rounded-full hover:bg-white/[0.14] transition-colors;
   }
 }
 

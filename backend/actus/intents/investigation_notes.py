@@ -1,7 +1,8 @@
+import json
 import html
 import os
 import re
-from typing import Optional
+from typing import Optional, Any
 from urllib.parse import quote
 
 import pandas as pd
@@ -124,6 +125,139 @@ def _clean_note_body(raw: Optional[str]) -> str:
     return text.strip() or "No note body found."
 
 
+def _compact_whitespace(value: Any) -> str:
+    return " ".join(str(value or "").split()).strip()
+
+
+def _normalize_note_lines(text: str, *, max_lines: int = 16) -> str:
+    kept: list[str] = []
+    current_section = ""
+    section_counts: dict[str, int] = {}
+    section_map = {
+        "background": "background",
+        "order details": "order_details",
+        "price trace": "price_trace",
+        "order history": "order_history",
+        "price history": "price_history",
+        "miscellaneous": "miscellaneous",
+        "usage": "usage",
+    }
+    for raw_line in str(text or "").splitlines():
+        line = _compact_whitespace(raw_line).lstrip("- ").strip()
+        if not line:
+            continue
+        lowered = line.lower().rstrip(":")
+        if lowered in section_map:
+            current_section = section_map[lowered]
+            continue
+        if lowered.startswith(("case number:", "case title:", "date opened:", "status:")):
+            continue
+        if re.fullmatch(r"inv\d{5,}", line, flags=re.IGNORECASE):
+            continue
+        if re.fullmatch(r"inv\d{5,}\s*\|\s*\d+", line, flags=re.IGNORECASE):
+            continue
+        if current_section == "background":
+            if lowered.startswith("notes on background:"):
+                kept.append(f"Background: {line.split(':', 1)[1].strip()}")
+            elif lowered.startswith("item number:"):
+                kept.append(line)
+            continue
+        if current_section == "order_details":
+            if lowered.startswith(("item:", "unit price:")):
+                kept.append(f"Order details: {line}")
+                section_counts[current_section] = section_counts.get(current_section, 0) + 1
+            continue
+        if current_section == "usage":
+            continue
+        keep_line = False
+        if current_section == "price_trace":
+            keep_line = any(term in lowered for term in ("currently loaded", "loaded at", "matches invoice price"))
+        elif current_section == "order_history":
+            keep_line = any(
+                term in lowered
+                for term in ("there are", "not individually reviewed", "no item substitutions", "no substitutions")
+            )
+        elif current_section == "price_history":
+            keep_line = "$" in line or "updated to" in lowered
+        elif current_section == "miscellaneous":
+            keep_line = any(
+                term in lowered
+                for term in (
+                    "price discrepancy",
+                    "pricing summary",
+                    "originally requested",
+                    "original requested price",
+                    "confirmed the correct price",
+                    "correct price",
+                    "billed price",
+                    "incorrect price",
+                    "conflicting pricing trail",
+                    "communication error",
+                    "approval",
+                    "jeff",
+                    "should have been matched",
+                    "superseded",
+                )
+            )
+        elif any(
+            token in lowered
+            for token in (
+                "correct price",
+                "billed price",
+                "approval",
+                "price discrepancy",
+                "substitution",
+                "price should have been matched",
+            )
+        ):
+            keep_line = True
+
+        if keep_line:
+            label = current_section.replace("_", " ").title() if current_section else "Note"
+            if section_counts.get(current_section, 0) < 5:
+                kept.append(f"{label}: {line}")
+                section_counts[current_section] = section_counts.get(current_section, 0) + 1
+        if len(kept) >= max_lines:
+            break
+    return "\n".join(kept).strip()
+
+
+def _sorted_notes(notes: pd.DataFrame) -> pd.DataFrame:
+    frame = notes.copy()
+    frame["Updated At"] = pd.to_datetime(frame.get("Updated At"), errors="coerce")
+    frame["Created At"] = pd.to_datetime(frame.get("Created At"), errors="coerce")
+    frame["Sort Time"] = frame["Updated At"].fillna(frame["Created At"])
+    return frame.sort_values("Sort Time", ascending=False, na_position="last")
+
+
+def _select_ticket_note_samples(notes: pd.DataFrame, *, max_notes: int = 4) -> list[dict[str, str]]:
+    ranked = _sorted_notes(notes)
+    samples: list[dict[str, str]] = []
+    seen_bodies: set[str] = set()
+    for _, row in ranked.iterrows():
+        body = _clean_note_body(row.get("Body"))
+        normalized_body = _normalize_note_lines(body)
+        if not normalized_body or normalized_body == "No note body found.":
+            continue
+        body_key = normalized_body.lower()
+        if body_key in seen_bodies:
+            continue
+        seen_bodies.add(body_key)
+        samples.append(
+            {
+                "combo_key": str(row.get("Combo Key") or "").strip(),
+                "invoice_number": str(row.get("Invoice Number") or "").strip(),
+                "item_number": str(row.get("Item Number") or "").strip(),
+                "title": str(row.get("Title") or "").strip(),
+                "updated_at": str(row.get("Updated At") or row.get("Created At") or "").strip(),
+                "body": normalized_body,
+            }
+        )
+        if len(samples) >= max_notes:
+            break
+    return samples
+
+
 def _summarize_note_body(body: str) -> tuple[Optional[list[str]], dict[str, str | None]]:
     summary_meta: dict[str, str | None] = {"source": None, "model": None}
     if not _note_summary_enabled():
@@ -174,6 +308,97 @@ def _summarize_note_body(body: str) -> tuple[Optional[list[str]], dict[str, str 
     if not bullets:
         return None, summary_meta
     return bullets[:5], summary_meta
+
+
+def _summarize_ticket_note_samples(
+    ticket: str,
+    samples: list[dict[str, str]],
+    *,
+    total_notes: int,
+) -> tuple[Optional[list[str]], dict[str, str | None]]:
+    summary_meta: dict[str, str | None] = {"source": None, "model": None}
+    if not _note_summary_enabled() or not samples:
+        return None, summary_meta
+
+    sample_payload: list[dict[str, str]] = []
+    for item in samples:
+        sample_payload.append(
+            {
+                "combo_key": item.get("combo_key") or "N/A",
+                "invoice_number": item.get("invoice_number") or "N/A",
+                "item_number": item.get("item_number") or "N/A",
+                "title": item.get("title") or "N/A",
+                "updated_at": item.get("updated_at") or "N/A",
+                "body": item.get("body") or "No note body found.",
+            }
+        )
+
+    system_prompt = (
+        "You summarize investigation notes for a single credit ticket. "
+        "Return exactly 3 concise bullet lines and nothing else. "
+        "Only use facts present in the provided notes. "
+        "Prioritize the actual pricing or root-cause conclusion, the conflicting evidence or blocker, "
+        "and the next operational action or approval dependency. "
+        "Ignore note IDs, command tokens, and repetitive invoice listings."
+    )
+    user_prompt = (
+        f"Ticket: {ticket}\n"
+        f"Total ticket notes available: {total_notes}\n"
+        f"Unique note bodies reviewed: {len(sample_payload)}\n\n"
+        f"{json.dumps(sample_payload)}"
+    )
+
+    try:
+        primary_model, fallback_model = _resolve_note_summary_models()
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ]
+        response = openrouter_chat(messages, model=primary_model) if primary_model else openrouter_chat(messages)
+        summary_meta["source"] = "openrouter_primary"
+        summary_meta["model"] = _resolve_primary_model_name(primary_model)
+    except Exception:
+        if not fallback_model:
+            return None, summary_meta
+        try:
+            response = openrouter_chat(messages, model=fallback_model)
+            summary_meta["source"] = "openrouter_fallback"
+            summary_meta["model"] = fallback_model
+        except Exception:
+            return None, summary_meta
+
+    bullets: list[str] = []
+    for line in response.splitlines():
+        cleaned = line.strip()
+        if cleaned.startswith(("-", "•")):
+            cleaned = cleaned.lstrip("-•").strip()
+        if cleaned:
+            bullets.append(cleaned[:240])
+    if not bullets:
+        return None, summary_meta
+    return bullets[:3], summary_meta
+
+
+def _fallback_ticket_note_summary(
+    samples: list[dict[str, str]],
+) -> list[str]:
+    if not samples:
+        return []
+
+    primary_body = samples[0].get("body") or ""
+    bullets, _ = _summarize_note_body(primary_body)
+    if bullets:
+        return bullets[:3]
+
+    lines = [line.strip() for line in primary_body.splitlines() if line.strip()]
+    out: list[str] = []
+    for line in lines:
+        if line.lower() in {"background:", "order details", "price trace", "order history", "price history", "miscellaneous", "usage"}:
+            continue
+        out.append(line[:200])
+        if len(out) >= 3:
+            break
+    return out[:3]
 
 
 def intent_investigation_notes(query: str, df: pd.DataFrame):
@@ -262,46 +487,61 @@ def intent_investigation_notes(query: str, df: pd.DataFrame):
             meta,
         )
 
-    preview_cols = [
-        "Ticket Number",
-        "Combo Key",
-        "Invoice Number",
-        "Item Number",
-        "Title",
-        "Updated At",
-        "Updated By",
-        "Note ID",
-    ]
-    preview_cols = [col for col in preview_cols if col in notes.columns]
-    notes = notes.copy()
-    notes["Updated At"] = pd.to_datetime(notes.get("Updated At"), errors="coerce")
-    notes["Created At"] = pd.to_datetime(notes.get("Created At"), errors="coerce")
-    notes["Sort Time"] = notes["Updated At"].fillna(notes["Created At"])
-    notes = notes.sort_values("Sort Time", ascending=False, na_position="last")
-
-    preview = notes[preview_cols]
-    items: list[str] = []
-    for _, row in preview.iterrows():
-        combo = row.get("Combo Key") or "N/A"
-        title = row.get("Title") or "N/A"
-        updated = row.get("Updated At") or "N/A"
-        note_id_value = row.get("Note ID") or "N/A"
-        command = f"Show investigation note for combo {combo}"
-        action_token = f"ask:{quote(command)}|Open note"
-        items.append(
-            f"- **{combo}** — {title} (Updated: {updated}) • Note ID: `{note_id_value}` • `{action_token}`"
-        )
-
-    ticket_label = f"ticket **{ticket}**" if ticket else "your request"
-    message = (
-        f"{mismatch_prefix}Here are the investigation notes for {ticket_label}.\n\n"
-        "Available notes:\n"
-        + "\n".join(items)
+    sorted_notes = _sorted_notes(notes)
+    samples = _select_ticket_note_samples(sorted_notes)
+    summary_bullets, summary_meta = _summarize_ticket_note_samples(
+        ticket or "N/A",
+        samples,
+        total_notes=len(sorted_notes.index),
     )
+    if not summary_bullets:
+        summary_bullets = _fallback_ticket_note_summary(samples)
+
+    message_lines = [
+        f"{mismatch_prefix}Here are the investigation notes for ticket **{ticket or 'N/A'}**.",
+        "",
+    ]
+    if summary_bullets:
+        message_lines.append("### Key takeaways")
+        for bullet in summary_bullets:
+            message_lines.append(f"- {bullet}")
+        message_lines.append("")
+
+    unique_count = len(samples)
+    total_count = len(sorted_notes.index)
+    message_lines.append(
+        f"Reviewed **{unique_count}** unique note body/bodies across **{total_count}** ticket note(s)."
+    )
+    if samples:
+        message_lines.append("")
+        message_lines.append("Relevant notes reviewed:")
+        for item in samples[:4]:
+            combo = item.get("combo_key") or "N/A"
+            title = item.get("title") or "N/A"
+            updated = item.get("updated_at") or "N/A"
+            command = f"Show investigation note for combo {combo}"
+            action_token = f"ask:{quote(command)}|Open note"
+            message_lines.append(
+                f"- **{combo}** — {title} (Updated: {updated}) • `{action_token}`"
+            )
+        remaining = max(total_count - len(samples[:4]), 0)
+        if remaining:
+            message_lines.append(f"- Plus **{remaining}** additional related note(s).")
+
+    meta: dict[str, Any] = {"show_table": False}
+    if summary_bullets:
+        meta["note_summary"] = {
+            "bullets": summary_bullets[:3],
+            "disclaimer": "Generated by LLM" if summary_meta.get("source") else "Generated from note evidence",
+            "source": summary_meta.get("source"),
+            "model": summary_meta.get("model"),
+            "ticket_level": True,
+            "reviewed_note_bodies": unique_count,
+            "total_ticket_notes": total_count,
+        }
+
     return (
-        message,
+        "\n".join(message_lines).strip(),
         None,
-        {
-            "show_table": False,
-        },
+        meta,
     )

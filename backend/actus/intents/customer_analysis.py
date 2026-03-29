@@ -17,16 +17,26 @@ def _is_explicit_analyze_query(query: str) -> bool:
     return any(alias in q_low for alias in INTENT_ALIASES)
 
 
+_EXPLICIT_CUSTOMER_RE = re.compile(
+    r"\b(?:account(?:\s+prefix)?|customer(?:\s+(?:number|id))?|prefix)\s*[:\-]?\s*([A-Za-z][A-Za-z0-9-]{1,})\b",
+    flags=re.IGNORECASE,
+)
+
+
+def _extract_explicit_customer_query(query: str) -> str | None:
+    text = str(query or "").strip()
+    explicit = _EXPLICIT_CUSTOMER_RE.search(text)
+    if explicit and explicit.group(1):
+        return explicit.group(1).strip().upper()
+    return None
+
+
 def _extract_customer_query(query: str) -> str | None:
     text = str(query or "").strip()
 
-    explicit = re.search(
-        r"\b(?:account(?:\s+prefix)?|customer(?:\s+(?:number|id))?|prefix)\s*[:\-]?\s*([A-Za-z][A-Za-z0-9-]{1,})\b",
-        text,
-        flags=re.IGNORECASE,
-    )
-    if explicit and explicit.group(1):
-        return explicit.group(1).strip().upper()
+    explicit = _extract_explicit_customer_query(text)
+    if explicit:
+        return explicit
 
     stop_words = {
         "analyze",
@@ -41,6 +51,25 @@ def _extract_customer_query(query: str) -> str | None:
         "run",
         "credits",
         "credit",
+        "which",
+        "what",
+        "where",
+        "who",
+        "driving",
+        "most",
+        "leading",
+        "volume",
+        "open",
+        "exposure",
+        "credited",
+        "issued",
+        "last",
+        "month",
+        "months",
+        "quarter",
+        "quarters",
+        "this",
+        "current",
     }
     for token in re.findall(r"[A-Za-z][A-Za-z0-9-]*", text):
         value = token.strip()

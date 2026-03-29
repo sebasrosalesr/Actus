@@ -15,7 +15,9 @@ Actus is a monorepo for a credit operations copilot: a React frontend, a FastAPI
 
 ## What Actus does
 
-- `POST /api/ask` routes user queries through the Actus intent system and can optionally fall back to OpenRouter
+- `POST /api/ask` supports `manual` and `auto` ask modes
+- Manual mode routes one query to one primary specialist intent
+- Auto mode orchestrates up to 3 specialist intents sequentially, then returns one synthesized executive answer
 - Structured analysis endpoints support tickets, items, and accounts/customers
 - RAG search and answer flows run through the `new_design` pipeline only
 - Firebase RTDB provides operational data and user context lookup
@@ -46,6 +48,56 @@ Current intent coverage includes:
 - Bulk search
 
 `GET /api/help` returns the current help text sourced from `backend/actus/help_text.py`.
+
+## Ask modes
+
+`POST /api/ask` accepts:
+
+```json
+{
+  "query": "give me a credit overview for the last month",
+  "mode": "manual"
+}
+```
+
+`mode` values:
+
+- `manual`: default; runs the normal Actus intent router and returns the primary specialist response with its native cards, tables, and charts
+- `auto`: plans the query, runs up to 3 existing specialist intents sequentially, and returns one synthesized markdown answer with executed-intent chips and in-chat follow-ups
+
+Auto mode uses two planning families:
+
+- `entity`: ticket, item, customer/account, and optional investigation notes
+- `portfolio`: overview, RTN updates, anomalies, root causes, trends, aging, and ops snapshot
+
+Planner behavior:
+
+- Deterministic-first planner using current intent/entity detection
+- Optional LLM planning fallback only when `ACTUS_INTENT_CLASSIFIER` is enabled
+- Final synthesis uses OpenRouter when available, with deterministic fallback if synthesis fails
+
+Architecture:
+
+```mermaid
+flowchart LR
+    U["User"] --> FE["Actus Chat"]
+    FE --> ASK["POST /api/ask"]
+
+    ASK --> MODE{"mode"}
+    MODE --> MAN["manual"]
+    MODE --> AUTO["auto"]
+
+    MAN --> ROUTER["actus_answer()"]
+    ROUTER --> ONE["One Primary Specialist Intent"]
+    ONE --> OUT1["Structured Specialist Output"]
+
+    AUTO --> PLAN["plan_auto_mode()"]
+    PLAN --> RUN["Run up to 3 Specialists Sequentially"]
+    RUN --> SYNTH["Executive Synthesis"]
+    SYNTH --> OUT2["Unified Auto Answer"]
+```
+
+Manual and Auto share the same underlying specialist intents, cached credit dataset, RAG runtime, Pinecone retrieval, and OpenRouter integrations. The difference is orchestration and presentation.
 
 ## Stack
 
@@ -95,13 +147,13 @@ Update `backend/.env` with the values your environment needs.
 | `ACTUS_OPENROUTER_API_KEY` | Optional | Required for OpenRouter-backed flows |
 | `ACTUS_OPENROUTER_MODEL` | Optional | Primary chat model |
 | `ACTUS_OPENROUTER_MODEL_FALLBACK` | Optional | Fallback chat/classifier model |
-| `ACTUS_OPENROUTER_SUMMARY_MODEL` | Optional | Preferred summarization model |
+| `ACTUS_OPENROUTER_SUMMARY_MODEL` | Optional | Preferred summarization model for Auto synthesis and other summary flows |
 | `ACTUS_OPENROUTER_SUMMARY_MODEL_FALLBACK` | Optional | Fallback summarization model |
 | `ACTUS_OPENROUTER_HIGHLIGHTS_MODEL` | Optional | Ticket highlight model |
 | `ACTUS_OPENROUTER_HIGHLIGHTS_MODEL_FALLBACK` | Optional | Fallback ticket highlight model |
 | `ACTUS_OPENROUTER_MODE` | Optional | `always` or `fallback` for `/api/ask` |
 | `ACTUS_OPENROUTER_SYSTEM` | Optional | System prompt override for `/api/ask` |
-| `ACTUS_INTENT_CLASSIFIER` | Optional | Enables OpenRouter intent classification |
+| `ACTUS_INTENT_CLASSIFIER` | Optional | Enables OpenRouter intent classification and Auto mode planning fallback |
 | `ACTUS_INV_NOTE_SUMMARY` | Optional | Enables investigation-note summarization |
 | `ACTUS_INV_NOTE_SUMMARY_MAX_CHARS` | Optional | Input size cap for investigation-note summarization |
 
@@ -195,14 +247,43 @@ RAG API:
 
 If `ACTUS_API_KEY` is set, include `x-api-key: $ACTUS_API_KEY` on protected `/api/*` and `/rag/*` requests.
 
+`POST /api/ask` request body:
+
+- `query`: required user message
+- `mode`: optional `manual | auto`; defaults to `manual`
+
 ## Example requests
 
-Chat:
+Manual chat:
 
 ```bash
 curl -sS -X POST http://127.0.0.1:8000/api/ask \
   -H 'Content-Type: application/json' \
-  -d '{"query":"Actus, analyze ticket R-048484"}' | jq
+  -d '{"query":"Actus, analyze ticket R-048484","mode":"manual"}' | jq
+```
+
+Auto chat:
+
+```bash
+curl -sS -X POST http://127.0.0.1:8000/api/ask \
+  -H 'Content-Type: application/json' \
+  -d '{"query":"give me a credit overview for the last month","mode":"auto"}' | jq
+```
+
+Auto entity example:
+
+```bash
+curl -sS -X POST http://127.0.0.1:8000/api/ask \
+  -H 'Content-Type: application/json' \
+  -d '{"query":"analyze ticket R-067298 with investigation notes and evidence","mode":"auto"}' | jq
+```
+
+Auto portfolio example:
+
+```bash
+curl -sS -X POST http://127.0.0.1:8000/api/ask \
+  -H 'Content-Type: application/json' \
+  -d '{"query":"show me system RTN updates analysis for the current month","mode":"auto"}' | jq
 ```
 
 Ticket analysis:

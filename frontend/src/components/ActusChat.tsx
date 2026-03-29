@@ -30,8 +30,13 @@ const SUGGESTED_INTENTS = [
         mode: 'auto' as const,
     },
     {
-        label: 'Which customers are driving the most credited volume in the last 6 months',
-        query: 'which customers are driving the most credited volume in the last 6 months',
+        label: 'Give me a credit overview with RTN updates and root causes for the last 6 months',
+        query: 'give me a credit overview with RTN updates and root causes for the last 6 months',
+        mode: 'auto' as const,
+    },
+    {
+        label: 'Which customers are driving the most credited volume in the last 3 months',
+        query: 'which customers are driving the most credited volume in the last 3 months',
         mode: 'auto' as const,
     },
     {

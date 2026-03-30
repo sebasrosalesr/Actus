@@ -528,6 +528,9 @@ def _execute_planned_intent(plan: PlannedIntent, df: pd.DataFrame) -> Specialist
     if result is None:
         raise RuntimeError(f"{plan.id} returned no result")
     text, rows, meta = _return_with_intent(result, intent_id=plan.id, matched_by="auto_mode")
+    cache = df.attrs.setdefault("_actus_intent_cache", {}) if isinstance(getattr(df, "attrs", None), dict) else None
+    if isinstance(cache, dict):
+        cache[(plan.id, plan.query)] = (text, rows, meta)
     return SpecialistRun(plan=plan, text=text, rows=rows, meta=meta)
 
 
@@ -1464,9 +1467,14 @@ def _llm_synthesize_auto_answer(
 
 
 def auto_mode_answer(query: str, df: pd.DataFrame) -> tuple[str, pd.DataFrame | None, dict[str, Any]]:
+    working_df = df.copy(deep=False)
+    if isinstance(getattr(df, "attrs", None), dict):
+        working_df.attrs = dict(df.attrs)
+    working_df.attrs["_actus_intent_cache"] = {}
+
     plan = plan_auto_mode(query)
     if plan is None or not plan.intents:
-        return actus_answer(query, df)
+        return actus_answer(query, working_df)
 
     successful_runs: list[SpecialistRun] = []
     failed_runs: list[PlannedIntent] = []
@@ -1474,7 +1482,7 @@ def auto_mode_answer(query: str, df: pd.DataFrame) -> tuple[str, pd.DataFrame | 
 
     for planned_intent in plan.intents:
         try:
-            run = _execute_planned_intent(planned_intent, df)
+            run = _execute_planned_intent(planned_intent, working_df)
         except Exception:
             failed_runs.append(planned_intent)
             executed_intents.append(
@@ -1496,7 +1504,7 @@ def auto_mode_answer(query: str, df: pd.DataFrame) -> tuple[str, pd.DataFrame | 
         )
 
     if not successful_runs:
-        return actus_answer(query, df)
+        return actus_answer(query, working_df)
 
     result_suggestions = [
         item

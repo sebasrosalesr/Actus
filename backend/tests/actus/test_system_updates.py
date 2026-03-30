@@ -70,7 +70,7 @@ class TestSystemUpdatesIntent(unittest.TestCase):
         self.assertIsNotNone(rows)
         assert rows is not None
         self.assertIn("System RTN updates analysis:", text)
-        self.assertIn("Window used: **2026-01-29 → 2026-03-29**", text)
+        self.assertIn("Window used: **2026-01-30 → 2026-03-30**", text)
         self.assertIn("System-updated records with RTN/CR: **4** / **$1,620.00**", text)
         self.assertIn("Batch update dates: **3** total, **1** with multi-record batches affecting **2** record(s) / **$600.00**", text)
         self.assertIn("Largest batch: **2** record(s) on **2026-03-15** / **$600.00**", text)
@@ -94,8 +94,8 @@ class TestSystemUpdatesIntent(unittest.TestCase):
             [
                 {
                     "id": "system_updates",
-                    "label": "System RTN updates preview (2026-01-29 → 2026-03-29)",
-                    "prefix": "system rtn updates analysis from 2026-01-29 to 2026-03-29",
+                    "label": "System RTN updates preview (2026-01-30 → 2026-03-30)",
+                    "prefix": "system rtn updates analysis from 2026-01-30 to 2026-03-30",
                 }
             ],
             meta["suggestions"],

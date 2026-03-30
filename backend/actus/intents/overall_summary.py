@@ -253,7 +253,16 @@ def _credited_in_period_metrics(
         "largest_manual_batch_credit_total": 0.0,
     }
 
-    response = intent_system_updates(_rtn_updates_query(start, end), df)
+    rtn_query = _rtn_updates_query(start, end)
+    response = None
+    cache = df.attrs.get("_actus_intent_cache") if isinstance(getattr(df, "attrs", None), dict) else None
+    if isinstance(cache, dict):
+        cached_response = cache.get(("system_updates", rtn_query))
+        if isinstance(cached_response, tuple) and len(cached_response) == 3:
+            response = cached_response
+
+    if response is None:
+        response = intent_system_updates(rtn_query, df)
     if not isinstance(response, tuple) or len(response) != 3:
         return empty_payload, []
 
@@ -368,6 +377,8 @@ def intent_overall_summary(query: str, df: pd.DataFrame):
         return "I don't see any credit records to summarize right now."
 
     dv = df.copy()
+    if isinstance(getattr(df, "attrs", None), dict):
+        dv.attrs = dict(df.attrs)
     if "Date" in dv.columns:
         dv["Date"] = coerce_date(dv["Date"])
     else:

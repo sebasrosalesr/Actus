@@ -567,6 +567,28 @@ def _ask_cache_key(*, mode: str, query: str, df: pd.DataFrame) -> tuple[str, str
     return (str(mode or "manual"), str(query or "").strip().lower(), _df_cache_token(df))
 
 
+def _is_cacheable_auto_payload(payload: Dict[str, Any]) -> bool:
+    if not isinstance(payload, dict):
+        return False
+    meta = payload.get("meta")
+    if not isinstance(meta, dict):
+        return False
+    if meta.get("intent_id") != "auto_mode":
+        return False
+    auto_meta = meta.get("auto_mode")
+    if not isinstance(auto_meta, dict):
+        return False
+    executed = auto_meta.get("executed_intents")
+    if not isinstance(executed, list) or not executed:
+        return False
+    for item in executed:
+        if not isinstance(item, dict):
+            return False
+        if str(item.get("status") or "").strip().lower() != "ok":
+            return False
+    return True
+
+
 def _get_cached_ask_payload(*, mode: str, query: str, df: pd.DataFrame) -> Dict[str, Any] | None:
     if not _ask_cache_enabled() or mode != "auto":
         return None
@@ -585,11 +607,16 @@ def _get_cached_ask_payload(*, mode: str, query: str, df: pd.DataFrame) -> Dict[
         if not isinstance(cached, dict):
             return None
         payload = cached.get("payload")
-        return copy.deepcopy(payload) if isinstance(payload, dict) else None
+        if not isinstance(payload, dict) or not _is_cacheable_auto_payload(payload):
+            _ASK_CACHE.pop(key, None)
+            return None
+        return copy.deepcopy(payload)
 
 
 def _store_cached_ask_payload(*, mode: str, query: str, df: pd.DataFrame, payload: Dict[str, Any]) -> None:
     if not _ask_cache_enabled() or mode != "auto":
+        return
+    if not _is_cacheable_auto_payload(payload):
         return
     key = _ask_cache_key(mode=mode, query=query, df=df)
     with _ASK_CACHE_LOCK:

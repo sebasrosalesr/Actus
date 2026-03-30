@@ -162,6 +162,96 @@ class TestOverallSummaryIntent(unittest.TestCase):
             meta["suggestions"][2],
         )
 
+    def test_credit_overview_falls_back_to_minimal_summary_when_detailed_rendering_fails(self) -> None:
+        df = pd.DataFrame(
+            [
+                {
+                    "Date": "2026-03-05",
+                    "Ticket Number": "R-1",
+                    "Invoice Number": "INV1",
+                    "Item Number": "1001",
+                    "Customer Number": "JHC11",
+                    "Credit Request Total": "100.00",
+                    "RTN_CR_No": "",
+                    "Status": "[2026-03-15 10:00:00] Submitted to billing",
+                },
+                {
+                    "Date": "2026-03-08",
+                    "Ticket Number": "R-3",
+                    "Invoice Number": "INV3",
+                    "Item Number": "1001",
+                    "Customer Number": "JHC11",
+                    "Credit Request Total": "150.00",
+                    "RTN_CR_No": "CR-9",
+                    "Status": "[2026-03-20 10:00:00] Credited",
+                },
+            ]
+        )
+
+        system_updates_meta = {
+            "show_table": True,
+            "suggestions": [],
+            "csv_rows": pd.DataFrame(
+                [
+                    {
+                        "Ticket Number": "R-3",
+                        "Invoice Number": "INV3",
+                        "Item Number": "1001",
+                        "Customer Number": "JHC11",
+                        "RTN_CR_No": "CR-9",
+                        "Credit Request Total": 150.0,
+                        "Update Source": "system",
+                        "Primary Update Source": "system",
+                        "Reopened After Terminal": False,
+                        "Update Event Time": "2026-03-20 10:00:00",
+                        "Days To RTN Update": 12.0,
+                    }
+                ]
+            ),
+            "system_updates_summary": {
+                "total_records": 1,
+                "credit_total": 150.0,
+                "avg_days_to_system_credit": 12.0,
+                "median_days_to_system_credit": 12.0,
+                "outlier_count": 0,
+                "outlier_ticket_ids": [],
+                "batch_dates": 1,
+                "batched_dates": 0,
+                "batched_records": 0,
+                "batched_credit_total": 0.0,
+                "largest_batch_count": 1,
+                "largest_batch_date": "2026-03-20",
+                "largest_batch_credit_total": 150.0,
+                "manual_record_count": 0,
+                "manual_credit_total": 0.0,
+                "manual_avg_days_to_update": 0.0,
+                "manual_median_days_to_update": 0.0,
+                "manual_outlier_count": 0,
+                "manual_outlier_ticket_ids": [],
+                "manual_batch_dates": 0,
+                "manual_batched_dates": 0,
+                "manual_batched_records": 0,
+                "manual_batched_credit_total": 0.0,
+                "manual_largest_batch_count": 0,
+                "manual_largest_batch_date": "N/A",
+                "manual_largest_batch_credit_total": 0.0,
+                "preview_total_records": 1,
+            },
+        }
+
+        with patch(
+            "actus.intents.overall_summary.intent_system_updates",
+            return_value=("System RTN updates analysis", None, system_updates_meta),
+        ):
+            with patch("actus.intents.overall_summary._top_amount_groups", side_effect=RuntimeError("boom")):
+                text, rows, meta = intent_overall_summary("give me a credit overview this month", df)
+
+        self.assertIsNone(rows)
+        self.assertIn("What was credited in period: **$150.00** across **1** unique record(s)", text)
+        self.assertIn("Primary attribution: **system-led 1 / $150.00**, **manual-led 0 / $0.00**", text)
+        self.assertEqual(1, meta["overall_summary"]["credited_in_period"]["primary_system_record_count"])
+        self.assertEqual([], meta["overall_summary"]["top_customers"])
+
     def test_credit_overview_preserves_event_counts_when_same_record_has_both_sources(self) -> None:
         df = pd.DataFrame(
             [

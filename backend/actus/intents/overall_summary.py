@@ -16,6 +16,43 @@ INTENT_ALIASES = [
 ]
 
 
+def _empty_time_metrics() -> dict[str, Any]:
+    return {
+        "avg_days_open": 0.0,
+        "avg_days_since_last_status": 0.0,
+        "billing_queue_delay_count": 0,
+        "billing_queue_delay_total": 0.0,
+        "stale_investigation_count": 0,
+        "stale_investigation_total": 0.0,
+    }
+
+
+def _empty_credited_metrics() -> dict[str, Any]:
+    return {
+        "credited_record_count": 0,
+        "credited_credit_total": 0.0,
+        "credited_event_count": 0,
+        "credited_event_credit_total": 0.0,
+        "primary_system_record_count": 0,
+        "primary_system_credit_total": 0.0,
+        "primary_manual_record_count": 0,
+        "primary_manual_credit_total": 0.0,
+        "system_record_count": 0,
+        "system_credit_total": 0.0,
+        "manual_record_count": 0,
+        "manual_credit_total": 0.0,
+        "records_with_both_sources": 0,
+        "reopened_after_terminal_count": 0,
+        "avg_days_to_rtn_assignment": 0.0,
+        "largest_system_batch_count": 0,
+        "largest_system_batch_date": "N/A",
+        "largest_system_batch_credit_total": 0.0,
+        "largest_manual_batch_count": 0,
+        "largest_manual_batch_date": "N/A",
+        "largest_manual_batch_credit_total": 0.0,
+    }
+
+
 def _has_rtn(series: pd.Series) -> pd.Series:
     values = series.fillna("").astype(str).str.strip().str.upper()
     return ~values.isin({"", "NAN", "NONE", "NULL", "NA"})
@@ -144,14 +181,7 @@ def _cached_root_cause_summary(frame: pd.DataFrame, *, limit: int = 3) -> list[d
 
 def _time_reasoning_metrics(open_df: pd.DataFrame) -> dict[str, Any]:
     if open_df.empty:
-        return {
-            "avg_days_open": 0.0,
-            "avg_days_since_last_status": 0.0,
-            "billing_queue_delay_count": 0,
-            "billing_queue_delay_total": 0.0,
-            "stale_investigation_count": 0,
-            "stale_investigation_total": 0.0,
-        }
+        return _empty_time_metrics()
 
     enriched = open_df.copy()
     today = pd.Timestamp.today().normalize()
@@ -263,29 +293,7 @@ def _credited_in_period_metrics(
     start: pd.Timestamp | None,
     end: pd.Timestamp | None,
 ) -> tuple[dict[str, Any], list[dict[str, str]]]:
-    empty_payload = {
-        "credited_record_count": 0,
-        "credited_credit_total": 0.0,
-        "credited_event_count": 0,
-        "credited_event_credit_total": 0.0,
-        "primary_system_record_count": 0,
-        "primary_system_credit_total": 0.0,
-        "primary_manual_record_count": 0,
-        "primary_manual_credit_total": 0.0,
-        "system_record_count": 0,
-        "system_credit_total": 0.0,
-        "manual_record_count": 0,
-        "manual_credit_total": 0.0,
-        "records_with_both_sources": 0,
-        "reopened_after_terminal_count": 0,
-        "avg_days_to_rtn_assignment": 0.0,
-        "largest_system_batch_count": 0,
-        "largest_system_batch_date": "N/A",
-        "largest_system_batch_credit_total": 0.0,
-        "largest_manual_batch_count": 0,
-        "largest_manual_batch_date": "N/A",
-        "largest_manual_batch_credit_total": 0.0,
-    }
+    empty_payload = _empty_credited_metrics()
 
     rtn_query = _rtn_updates_query(start, end)
     response = None
@@ -401,6 +409,65 @@ def _credited_in_period_metrics(
     return payload, suggestions
 
 
+def _minimal_overall_summary_response(
+    *,
+    resolved_window: str,
+    start_naive: pd.Timestamp | None,
+    end_naive: pd.Timestamp | None,
+    open_count: int,
+    open_total: float,
+    credited_metrics: dict[str, Any],
+    rtn_suggestions: list[dict[str, str]],
+) -> tuple[str, None, dict[str, Any]]:
+    time_metrics = _empty_time_metrics()
+    suggestions: list[dict[str, str]] = []
+    ops_snapshot_suggestion = _ops_snapshot_suggestion(start_naive, end_naive)
+    if ops_snapshot_suggestion is not None:
+        suggestions.append(ops_snapshot_suggestion)
+    for item in rtn_suggestions:
+        if isinstance(item, dict) and item.get("prefix") and item not in suggestions:
+            suggestions.append(item)
+    plot_suggestion = _credit_amount_plot_suggestion(start_naive, end_naive)
+    if plot_suggestion not in suggestions:
+        suggestions.append(plot_suggestion)
+
+    message_lines = [
+        "📊 **Credit Overview**",
+        f"- Window: **{resolved_window}**",
+        "",
+        "💸 **Liability Snapshot**",
+        f"- Open exposure: **{format_money(open_total)}** across **{open_count}** record(s)",
+        "",
+        "✅ **What Was Credited In Period**",
+        f"- What was credited in period: **{format_money(credited_metrics['credited_credit_total'])}** across **{credited_metrics['credited_record_count']}** unique record(s)",
+        f"- Primary attribution: **system-led {credited_metrics['primary_system_record_count']} / {format_money(credited_metrics['primary_system_credit_total'])}**, **manual-led {credited_metrics['primary_manual_record_count']} / {format_money(credited_metrics['primary_manual_credit_total'])}**",
+        f"- Avg days from entry to RTN assignment: **{credited_metrics['avg_days_to_rtn_assignment']:.1f}**",
+        f"- Reopened after terminal: **{credited_metrics['reopened_after_terminal_count']}** record(s)",
+    ]
+
+    meta = {
+        "show_table": False,
+        "suggestions": suggestions,
+        "overall_summary": {
+            "window": resolved_window,
+            "open_record_count": open_count,
+            "open_credit_total": open_total,
+            "avg_days_open": time_metrics["avg_days_open"],
+            "avg_days_since_last_status": time_metrics["avg_days_since_last_status"],
+            "billing_queue_delay_count": time_metrics["billing_queue_delay_count"],
+            "billing_queue_delay_total": time_metrics["billing_queue_delay_total"],
+            "stale_investigation_count": time_metrics["stale_investigation_count"],
+            "stale_investigation_total": time_metrics["stale_investigation_total"],
+            "credited_in_period": credited_metrics,
+            "top_customers": [],
+            "top_items": [],
+            "top_root_causes": [],
+        },
+    }
+
+    return "\n".join(message_lines), None, meta
+
+
 def intent_overall_summary(query: str, df: pd.DataFrame):
     q_low = query.lower()
     keywords_any = ["summary", "overview", "picture", "status", "how are credits", "credit overview"]
@@ -449,81 +516,96 @@ def intent_overall_summary(query: str, df: pd.DataFrame):
     open_count = int(len(open_df.index))
     open_total = float(open_df["Credit Request Total_num"].sum())
 
-    time_metrics = _time_reasoning_metrics(open_df.dropna(subset=["Date"]).copy()) if "Date" in open_df.columns else _time_reasoning_metrics(pd.DataFrame())
-    credited_metrics, rtn_suggestions = _credited_in_period_metrics(dv, start=start_naive, end=end_naive)
+    try:
+        time_metrics = _time_reasoning_metrics(open_df.dropna(subset=["Date"]).copy()) if "Date" in open_df.columns else _time_reasoning_metrics(pd.DataFrame())
+        credited_metrics, rtn_suggestions = _credited_in_period_metrics(dv, start=start_naive, end=end_naive)
 
-    top_customers = _top_amount_groups(scope, "Customer Number")
-    top_items = _top_amount_groups(scope, "Item Number")
-    top_root_causes = _cached_root_cause_summary(dv) or _root_cause_summary(scope)
+        top_customers = _top_amount_groups(scope, "Customer Number")
+        top_items = _top_amount_groups(scope, "Item Number")
+        top_root_causes = _cached_root_cause_summary(dv) or _root_cause_summary(scope)
 
-    message_lines = [
-        "📊 **Credit Overview**",
-        f"- Window: **{resolved_window}**",
-        "",
-        "💸 **Liability Snapshot**",
-        f"- Open exposure: **{format_money(open_total)}** across **{open_count}** record(s)",
-        "",
-        "⏱️ **Time reasoning**",
-        f"- Avg days open: **{time_metrics['avg_days_open']:.1f}**",
-        f"- Avg days since last update: **{time_metrics['avg_days_since_last_status']:.1f}**",
-        f"- Billing queue delay: **{time_metrics['billing_queue_delay_count']}** record(s) / **{format_money(time_metrics['billing_queue_delay_total'])}**",
-        f"- Stale investigation: **{time_metrics['stale_investigation_count']}** record(s) / **{format_money(time_metrics['stale_investigation_total'])}**",
-        "",
-        "✅ **What Was Credited In Period**",
-        f"- What was credited in period: **{format_money(credited_metrics['credited_credit_total'])}** across **{credited_metrics['credited_record_count']}** unique record(s)",
-        f"- Primary attribution: **system-led {credited_metrics['primary_system_record_count']} / {format_money(credited_metrics['primary_system_credit_total'])}**, **manual-led {credited_metrics['primary_manual_record_count']} / {format_money(credited_metrics['primary_manual_credit_total'])}**",
-        f"- Avg days from entry to RTN assignment: **{credited_metrics['avg_days_to_rtn_assignment']:.1f}**",
-        f"- Reopened after terminal: **{credited_metrics['reopened_after_terminal_count']}** record(s)",
-    ]
+        message_lines = [
+            "📊 **Credit Overview**",
+            f"- Window: **{resolved_window}**",
+            "",
+            "💸 **Liability Snapshot**",
+            f"- Open exposure: **{format_money(open_total)}** across **{open_count}** record(s)",
+            "",
+            "⏱️ **Time reasoning**",
+            f"- Avg days open: **{time_metrics['avg_days_open']:.1f}**",
+            f"- Avg days since last update: **{time_metrics['avg_days_since_last_status']:.1f}**",
+            f"- Billing queue delay: **{time_metrics['billing_queue_delay_count']}** record(s) / **{format_money(time_metrics['billing_queue_delay_total'])}**",
+            f"- Stale investigation: **{time_metrics['stale_investigation_count']}** record(s) / **{format_money(time_metrics['stale_investigation_total'])}**",
+            "",
+            "✅ **What Was Credited In Period**",
+            f"- What was credited in period: **{format_money(credited_metrics['credited_credit_total'])}** across **{credited_metrics['credited_record_count']}** unique record(s)",
+            f"- Primary attribution: **system-led {credited_metrics['primary_system_record_count']} / {format_money(credited_metrics['primary_system_credit_total'])}**, **manual-led {credited_metrics['primary_manual_record_count']} / {format_money(credited_metrics['primary_manual_credit_total'])}**",
+            f"- Avg days from entry to RTN assignment: **{credited_metrics['avg_days_to_rtn_assignment']:.1f}**",
+            f"- Reopened after terminal: **{credited_metrics['reopened_after_terminal_count']}** record(s)",
+        ]
 
-    if top_customers:
-        message_lines.extend(["", "🏢 **Mix / Drivers**", "Top customers in scope:"])
-        for item in top_customers:
-            message_lines.append(f"- **{item['label']}** — {format_money(item['credit_total'])}")
+        if top_customers:
+            message_lines.extend(["", "🏢 **Mix / Drivers**", "Top customers in scope:"])
+            for item in top_customers:
+                message_lines.append(f"- **{item['label']}** — {format_money(item['credit_total'])}")
 
-    if top_items:
-        message_lines.append("")
-        message_lines.append("Top items in scope:")
-        for item in top_items:
-            message_lines.append(f"- **{item['label']}** — {format_money(item['credit_total'])}")
+        if top_items:
+            message_lines.append("")
+            message_lines.append("Top items in scope:")
+            for item in top_items:
+                message_lines.append(f"- **{item['label']}** — {format_money(item['credit_total'])}")
 
-    if top_root_causes:
-        message_lines.append("")
-        message_lines.append("Main root causes in scope:")
-        for item in top_root_causes:
-            message_lines.append(
-                f"- **{item['root_cause']}** — **{item['record_count']}** record(s) / {format_money(item['credit_total'])}"
-            )
+        if top_root_causes:
+            message_lines.append("")
+            message_lines.append("Main root causes in scope:")
+            for item in top_root_causes:
+                message_lines.append(
+                    f"- **{item['root_cause']}** — **{item['record_count']}** record(s) / {format_money(item['credit_total'])}"
+                )
 
-    suggestions = []
-    ops_snapshot_suggestion = _ops_snapshot_suggestion(start_naive, end_naive)
-    if ops_snapshot_suggestion is not None:
-        suggestions.append(ops_snapshot_suggestion)
-    for item in rtn_suggestions:
-        if isinstance(item, dict) and item.get("prefix") and item not in suggestions:
-            suggestions.append(item)
-    plot_suggestion = _credit_amount_plot_suggestion(start_naive, end_naive)
-    if plot_suggestion not in suggestions:
-        suggestions.append(plot_suggestion)
+        suggestions = []
+        ops_snapshot_suggestion = _ops_snapshot_suggestion(start_naive, end_naive)
+        if ops_snapshot_suggestion is not None:
+            suggestions.append(ops_snapshot_suggestion)
+        for item in rtn_suggestions:
+            if isinstance(item, dict) and item.get("prefix") and item not in suggestions:
+                suggestions.append(item)
+        plot_suggestion = _credit_amount_plot_suggestion(start_naive, end_naive)
+        if plot_suggestion not in suggestions:
+            suggestions.append(plot_suggestion)
 
-    meta = {
-        "show_table": False,
-        "suggestions": suggestions,
-        "overall_summary": {
-            "window": resolved_window,
-            "open_record_count": open_count,
-            "open_credit_total": open_total,
-            "avg_days_open": time_metrics["avg_days_open"],
-            "avg_days_since_last_status": time_metrics["avg_days_since_last_status"],
-            "billing_queue_delay_count": time_metrics["billing_queue_delay_count"],
-            "billing_queue_delay_total": time_metrics["billing_queue_delay_total"],
-            "stale_investigation_count": time_metrics["stale_investigation_count"],
-            "stale_investigation_total": time_metrics["stale_investigation_total"],
-            "credited_in_period": credited_metrics,
-            "top_customers": top_customers,
-            "top_items": top_items,
-            "top_root_causes": top_root_causes,
-        },
-    }
+        meta = {
+            "show_table": False,
+            "suggestions": suggestions,
+            "overall_summary": {
+                "window": resolved_window,
+                "open_record_count": open_count,
+                "open_credit_total": open_total,
+                "avg_days_open": time_metrics["avg_days_open"],
+                "avg_days_since_last_status": time_metrics["avg_days_since_last_status"],
+                "billing_queue_delay_count": time_metrics["billing_queue_delay_count"],
+                "billing_queue_delay_total": time_metrics["billing_queue_delay_total"],
+                "stale_investigation_count": time_metrics["stale_investigation_count"],
+                "stale_investigation_total": time_metrics["stale_investigation_total"],
+                "credited_in_period": credited_metrics,
+                "top_customers": top_customers,
+                "top_items": top_items,
+                "top_root_causes": top_root_causes,
+            },
+        }
 
-    return "\n".join(message_lines), None, meta
+        return "\n".join(message_lines), None, meta
+    except Exception:
+        try:
+            credited_metrics, rtn_suggestions = _credited_in_period_metrics(dv, start=start_naive, end=end_naive)
+        except Exception:
+            credited_metrics, rtn_suggestions = _empty_credited_metrics(), []
+        return _minimal_overall_summary_response(
+            resolved_window=resolved_window,
+            start_naive=start_naive,
+            end_naive=end_naive,
+            open_count=open_count,
+            open_total=open_total,
+            credited_metrics=credited_metrics,
+            rtn_suggestions=rtn_suggestions,
+        )

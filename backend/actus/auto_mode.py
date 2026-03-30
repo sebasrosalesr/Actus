@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 from dataclasses import dataclass
@@ -20,6 +21,8 @@ from actus.intents.customer_analysis import _extract_explicit_customer_query, _e
 from actus.intents.item_analysis import _extract_item_number
 from actus.intents.ticket_analysis import _extract_ticket_id
 from actus.openrouter_client import openrouter_chat
+
+LOGGER = logging.getLogger(__name__)
 
 
 AUTO_FAMILY_ENTITY = "entity"
@@ -1484,6 +1487,7 @@ def auto_mode_answer(query: str, df: pd.DataFrame) -> tuple[str, pd.DataFrame | 
         try:
             run = _execute_planned_intent(planned_intent, working_df)
         except Exception:
+            LOGGER.exception("auto_mode specialist failed: %s", planned_intent.id)
             failed_runs.append(planned_intent)
             executed_intents.append(
                 {

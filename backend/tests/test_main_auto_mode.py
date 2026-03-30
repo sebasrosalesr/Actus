@@ -82,7 +82,13 @@ class TestAskAutoMode(unittest.TestCase):
                             "enabled": True,
                             "planner": "deterministic_first",
                             "primary_intent": "overall_summary",
-                            "executed_intents": [],
+                            "executed_intents": [
+                                {
+                                    "id": "overall_summary",
+                                    "label": "Credit overview",
+                                    "status": "ok",
+                                }
+                            ],
                             "subintent_count": 1,
                         },
                     },
@@ -97,6 +103,35 @@ class TestAskAutoMode(unittest.TestCase):
         self.assertEqual(2, mock_get_df.call_count)
         mock_auto.assert_called_once()
         self.assertEqual(1, len(main._ASK_CACHE))
+
+    def test_auto_ask_does_not_cache_partial_failure_response(self) -> None:
+        df = pd.DataFrame()
+        payload = (
+            "partial auto answer",
+            None,
+            {
+                "intent_id": "auto_mode",
+                "auto_mode": {
+                    "enabled": True,
+                    "planner": "deterministic_first",
+                    "primary_intent": "overall_summary",
+                    "executed_intents": [
+                        {"id": "system_updates", "label": "System updates with RTN", "status": "ok"},
+                        {"id": "overall_summary", "label": "Credit overview", "status": "error"},
+                    ],
+                    "subintent_count": 1,
+                },
+            },
+        )
+        with patch("main._get_df", return_value=df):
+            with patch("main.auto_mode_answer", return_value=payload) as mock_auto:
+                first = main.ask(main.AskRequest(query="give me a credit overview", mode="auto"))
+                second = main.ask(main.AskRequest(query="give me a credit overview", mode="auto"))
+
+        self.assertEqual("partial auto answer", first["text"])
+        self.assertEqual("partial auto answer", second["text"])
+        self.assertEqual(2, mock_auto.call_count)
+        self.assertEqual(0, len(main._ASK_CACHE))
 
 
 if __name__ == "__main__":

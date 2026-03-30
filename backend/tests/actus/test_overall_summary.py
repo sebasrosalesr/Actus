@@ -443,7 +443,7 @@ class TestOverallSummaryIntent(unittest.TestCase):
         cached_response = ("System RTN updates analysis", None, cached_meta)
 
         df.attrs["_actus_intent_cache"] = {
-            ("system_updates", "system rtn updates analysis from 2026-03-01 to 2026-03-30"): cached_response
+            ("system_updates", "system updates give me a credit overview for the last month"): cached_response
         }
 
         with patch("actus.intents.overall_summary._lookup_root_causes", return_value=root_cause_payload):

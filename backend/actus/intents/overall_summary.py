@@ -302,6 +302,29 @@ def _credited_in_period_metrics(
         cached_response = cache.get(("system_updates", rtn_query))
         if isinstance(cached_response, tuple) and len(cached_response) == 3:
             response = cached_response
+        if response is None:
+            requested_window = _window_range_label(start, end)
+            fallback_response = None
+            system_responses: list[tuple[str, pd.DataFrame | None, dict[str, Any]]] = []
+            for (intent_id, _cached_query), cached_response in cache.items():
+                if intent_id != "system_updates":
+                    continue
+                if not isinstance(cached_response, tuple) or len(cached_response) != 3:
+                    continue
+                system_responses.append(cached_response)
+                _text, _rows, meta = cached_response
+                if not isinstance(meta, dict):
+                    continue
+                summary = meta.get("system_updates_summary")
+                if not isinstance(summary, dict):
+                    continue
+                if requested_window and str(summary.get("window") or "").strip() == requested_window:
+                    fallback_response = cached_response
+                    break
+            if fallback_response is None and len(system_responses) == 1:
+                fallback_response = system_responses[0]
+            if isinstance(fallback_response, tuple) and len(fallback_response) == 3:
+                response = fallback_response
 
     if response is None:
         response = intent_system_updates(rtn_query, df)

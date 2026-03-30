@@ -744,6 +744,131 @@ class TestAutoModeExecution(unittest.TestCase):
         self.assertIn("Item should be PPD", text)
         self.assertIn("## Recommended Follow-Ups", text)
 
+    def test_top_accounts_single_specialist_summary_names_top_drivers(self) -> None:
+        plan = auto_mode.AutoPlan(
+            family="portfolio",
+            primary_intent="top_accounts",
+            target_label=None,
+            intents=(
+                auto_mode.PlannedIntent("top_accounts", "Top accounts", "top accounts"),
+            ),
+            suggestions=(),
+        )
+
+        run = auto_mode.SpecialistRun(
+            plan=plan.intents[0],
+            text="top accounts",
+            rows=None,
+            meta={
+                "top_accounts_summary": {
+                    "scope": "credited",
+                    "window": "2025-09-30 → 2026-03-30",
+                    "total_credit": 201751.00,
+                    "total_record_count": 1108,
+                    "data": [
+                        {"label": "ACD160", "record_count": 1, "credit_total": 20386.08},
+                        {"label": "SAM20", "record_count": 3, "credit_total": 10913.00},
+                        {"label": "TGH02", "record_count": 10, "credit_total": 7810.89},
+                    ],
+                }
+            },
+        )
+
+        with patch("actus.auto_mode.plan_auto_mode", return_value=plan):
+            with patch("actus.auto_mode._execute_planned_intent", return_value=run):
+                text, _rows, _meta = auto_mode.auto_mode_answer(
+                    "which customers are driving the most credited volume in the last 6 months",
+                    pd.DataFrame(),
+                )
+
+        self.assertIn("In September 30, 2025 – March 30, 2026, **$201,751.00** was credited across **1,108** record(s).", text)
+        self.assertIn("The top driver was **ACD160**", text)
+        self.assertIn("followed by **SAM20**", text)
+        self.assertIn("These two customers account for", text)
+        self.assertNotIn("Auto Mode ran **1/1** portfolio specialist", text)
+
+    def test_root_cause_timing_single_specialist_summary_compares_top_causes(self) -> None:
+        plan = auto_mode.AutoPlan(
+            family="portfolio",
+            primary_intent="root_cause_rtn_timing",
+            target_label=None,
+            intents=(
+                auto_mode.PlannedIntent("root_cause_rtn_timing", "Root cause RTN timing", "root cause rtn timing"),
+            ),
+            suggestions=(),
+        )
+
+        run = auto_mode.SpecialistRun(
+            plan=plan.intents[0],
+            text="root cause rtn timing",
+            rows=None,
+            meta={
+                "root_cause_rtn_timing": {
+                    "window": "current dataset",
+                    "record_count": 2097,
+                    "data": [
+                        {"root_cause": "Item should be PPD", "record_count": 454, "avg_days_to_rtn": 205.8},
+                        {"root_cause": "Unspecified", "record_count": 1087, "avg_days_to_rtn": 180.4},
+                        {"root_cause": "Price discrepancy", "record_count": 127, "avg_days_to_rtn": 95.6},
+                    ],
+                }
+            },
+        )
+
+        with patch("actus.auto_mode.plan_auto_mode", return_value=plan):
+            with patch("actus.auto_mode._execute_planned_intent", return_value=run):
+                text, _rows, _meta = auto_mode.auto_mode_answer(
+                    "which root causes are taking the longest to reach RTN assignment",
+                    pd.DataFrame(),
+                )
+
+        self.assertIn("In current dataset, across **2,097** credited record(s), **Item should be PPD** is the slowest path to RTN assignment", text)
+        self.assertIn("nearly **1.1x** longer than **Unspecified**", text)
+        self.assertIn("**Price discrepancy** follows at **95.6** day(s).", text)
+        self.assertNotIn("Auto Mode ran **1/1** portfolio specialist", text)
+
+    def test_billing_queue_single_specialist_summary_names_hotspots(self) -> None:
+        plan = auto_mode.AutoPlan(
+            family="portfolio",
+            primary_intent="billing_queue_hotspots",
+            target_label=None,
+            intents=(
+                auto_mode.PlannedIntent("billing_queue_hotspots", "Billing queue delays", "billing queue delays"),
+            ),
+            suggestions=(),
+        )
+
+        run = auto_mode.SpecialistRun(
+            plan=plan.intents[0],
+            text="billing queue delays",
+            rows=None,
+            meta={
+                "billing_queue_hotspots": {
+                    "window": "current dataset",
+                    "record_count": 224,
+                    "credit_total": 37725.55,
+                    "top_customers": [
+                        {"label": "WVN01", "record_count": 2, "credit_total": 4072.32},
+                    ],
+                    "top_items": [
+                        {"label": "1007986", "record_count": 7, "credit_total": 10496.40},
+                    ],
+                }
+            },
+        )
+
+        with patch("actus.auto_mode.plan_auto_mode", return_value=plan):
+            with patch("actus.auto_mode._execute_planned_intent", return_value=run):
+                text, _rows, _meta = auto_mode.auto_mode_answer(
+                    "where are billing queue delays accumulating",
+                    pd.DataFrame(),
+                )
+
+        self.assertIn("In current dataset, **224** record(s) totaling **$37,725.55** are currently delayed in the billing queue.", text)
+        self.assertIn("Delay is concentrating in **WVN01**", text)
+        self.assertIn("Top item hotspot is **1007986** at **$10,496.40**.", text)
+        self.assertNotIn("Auto Mode ran **1/1** portfolio specialist", text)
+
     def test_overview_with_trends_renders_overview_led_brief(self) -> None:
         plan = auto_mode.AutoPlan(
             family="portfolio",
@@ -824,6 +949,8 @@ class TestAutoModeExecution(unittest.TestCase):
             ["overall_summary", "credit_trends"],
             [item["id"] for item in meta["auto_mode"]["executed_intents"]],
         )
+        self.assertIn("In December 30, 2025 – March 30, 2026, **$126,604.55** was credited across **629** unique record(s), while **456** record(s) totaling **$37,973.15** remain open.", text)
+        self.assertIn("Compared with the prior period, total credits were **down 14.6%** and volume was **up 77.7%**.", text)
         self.assertIn("### Section 1: Period Activity", text)
         self.assertIn("### Section 5: Trends", text)
         self.assertIn("**Volume (Rows)**: 702 vs 395 (+77.7%).", text)

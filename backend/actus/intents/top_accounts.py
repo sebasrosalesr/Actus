@@ -178,6 +178,7 @@ def intent_top_accounts(query: str, df: pd.DataFrame):
                 "window": resolved_window,
                 "data": top_rows,
                 "total_credit": float(full_df["Credit Request Total"].sum()),
+                "total_record_count": int(full_df["Records"].sum()),
             },
         },
     )

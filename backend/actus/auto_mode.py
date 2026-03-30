@@ -1215,6 +1215,96 @@ def _specialist_headline(run: SpecialistRun) -> str:
     return f"{run.plan.label} completed."
 
 
+def _single_specialist_portfolio_executive_summary(run: SpecialistRun) -> str | None:
+    if run.plan.id == "top_accounts":
+        payload = run.meta.get("top_accounts_summary")
+        if not isinstance(payload, dict):
+            return None
+        data = [item for item in (payload.get("data") or []) if isinstance(item, dict)]
+        if not data:
+            return None
+        window = _humanize_window_label(payload.get("window") or "") or str(payload.get("window") or "the selected period").strip()
+        scope = str(payload.get("scope") or "credited").strip()
+        total_credit = float(payload.get("total_credit") or 0.0)
+        total_records = int(payload.get("total_record_count") or 0)
+        lead = data[0]
+        second = data[1] if len(data) > 1 else None
+        top_two_total = float(lead.get("credit_total") or 0.0) + float(second.get("credit_total") or 0.0) if second else float(lead.get("credit_total") or 0.0)
+        concentration_pct = (top_two_total / total_credit * 100.0) if total_credit > 0 else 0.0
+        if scope == "open":
+            first_sentence = (
+                f"In {window}, **{_format_money(total_credit)}** remains open across **{_format_count(total_records)}** record(s)."
+            )
+            third_sentence = (
+                f"These {'two customers' if second else 'customer'} account for **{concentration_pct:.1f}%** of total open exposure."
+            )
+        else:
+            first_sentence = (
+                f"In {window}, **{_format_money(total_credit)}** was credited across **{_format_count(total_records)}** record(s)."
+            )
+            third_sentence = (
+                f"These {'two customers' if second else 'customer'} account for **{concentration_pct:.1f}%** of total credited volume."
+            )
+        second_sentence = (
+            f"The top driver was **{lead.get('label') or 'N/A'}** at **{_format_money(lead.get('credit_total'))}** across **{_format_count(lead.get('record_count'))}** record(s)."
+        )
+        if second is not None:
+            second_sentence += f" It was followed by **{second.get('label') or 'N/A'}** at **{_format_money(second.get('credit_total'))}**."
+        return " ".join([first_sentence, second_sentence, third_sentence])
+
+    if run.plan.id == "root_cause_rtn_timing":
+        payload = run.meta.get("root_cause_rtn_timing")
+        if not isinstance(payload, dict):
+            return None
+        data = [item for item in (payload.get("data") or []) if isinstance(item, dict)]
+        if not data:
+            return None
+        window = _humanize_window_label(payload.get("window") or "") or str(payload.get("window") or "the selected period").strip()
+        total_records = int(payload.get("record_count") or 0)
+        lead = data[0]
+        second = data[1] if len(data) > 1 else None
+        third = data[2] if len(data) > 2 else None
+        first_sentence = (
+            f"In {window}, across **{_format_count(total_records)}** credited record(s), **{lead.get('root_cause') or 'Unspecified'}** is the slowest path to RTN assignment at **{float(lead.get('avg_days_to_rtn') or 0.0):.1f}** day(s) on average across **{_format_count(lead.get('record_count'))}** record(s)."
+        )
+        parts = [first_sentence]
+        if second is not None:
+            second_days = float(second.get("avg_days_to_rtn") or 0.0)
+            ratio = (float(lead.get("avg_days_to_rtn") or 0.0) / second_days) if second_days > 0 else 0.0
+            parts.append(
+                f"That is nearly **{ratio:.1f}x** longer than **{second.get('root_cause') or 'Unspecified'}** at **{second_days:.1f}** day(s)."
+            )
+        if third is not None:
+            parts.append(
+                f"**{third.get('root_cause') or 'Unspecified'}** follows at **{float(third.get('avg_days_to_rtn') or 0.0):.1f}** day(s)."
+            )
+        return " ".join(parts)
+
+    if run.plan.id == "billing_queue_hotspots":
+        payload = run.meta.get("billing_queue_hotspots")
+        if not isinstance(payload, dict):
+            return None
+        window = _humanize_window_label(payload.get("window") or "") or str(payload.get("window") or "the selected period").strip()
+        top_customers = [item for item in (payload.get("top_customers") or []) if isinstance(item, dict)]
+        top_items = [item for item in (payload.get("top_items") or []) if isinstance(item, dict)]
+        parts = [
+            f"In {window}, **{_format_count(payload.get('record_count'))}** record(s) totaling **{_format_money(payload.get('credit_total'))}** are currently delayed in the billing queue."
+        ]
+        if top_customers:
+            lead_customer = top_customers[0]
+            parts.append(
+                f"Delay is concentrating in **{lead_customer.get('label') or 'N/A'}**, which accounts for **{_format_money(lead_customer.get('credit_total'))}** across **{_format_count(lead_customer.get('record_count'))}** record(s)."
+            )
+        if top_items:
+            lead_item = top_items[0]
+            parts.append(
+                f"Top item hotspot is **{lead_item.get('label') or 'N/A'}** at **{_format_money(lead_item.get('credit_total'))}**."
+            )
+        return " ".join(parts)
+
+    return None
+
+
 def _build_specialist_sections(successful_runs: list[SpecialistRun]) -> list[dict[str, Any]]:
     sections: list[dict[str, Any]] = []
     for run in successful_runs:
@@ -1253,6 +1343,11 @@ def _executive_summary(
             f"Auto Mode reviewed{target} across **{completed}/{requested}** specialist run(s). "
             f"{_strip_markdown(_specialist_headline(first))}{partial_note}"
         )
+
+    if len(successful_runs) == 1:
+        single_summary = _single_specialist_portfolio_executive_summary(successful_runs[0])
+        if single_summary:
+            return single_summary + partial_note
 
     insight_bits = [_strip_markdown(_specialist_headline(run)) for run in successful_runs[:3]]
     joined = " ".join(insight_bits)
@@ -1566,8 +1661,39 @@ def _render_overview_trends_brief(
             f"manual-led **{manual_count}** record(s) / **{manual_total}**."
         )
 
+    trend_metrics = trend_payload.get("metrics") if isinstance(trend_payload.get("metrics"), list) else []
+    total_credit_metric = next(
+        (item for item in trend_metrics if isinstance(item, dict) and str(item.get("label") or "").strip().lower() == "total credits"),
+        None,
+    )
+    volume_metric = next(
+        (item for item in trend_metrics if isinstance(item, dict) and str(item.get("label") or "").strip().lower() == "volume (rows)"),
+        None,
+    )
+    trend_lead_parts = [
+        (
+            f"In {human_window}, **{_format_money(credited.get('credited_credit_total'))}** was credited across "
+            f"**{_format_count(credited.get('credited_record_count'))}** unique record(s), while "
+            f"**{_format_count(overview_payload.get('open_record_count'))}** record(s) totaling "
+            f"**{_format_money(overview_payload.get('open_credit_total'))}** remain open."
+        )
+    ]
+    if isinstance(total_credit_metric, dict):
+        credit_change = float(total_credit_metric.get("change") or 0.0)
+        direction = "up" if credit_change > 0 else "down"
+        sentence = f"Compared with the prior period, total credits were **{direction} {abs(credit_change):.1f}%**"
+        if isinstance(volume_metric, dict):
+            volume_change = float(volume_metric.get("change") or 0.0)
+            volume_direction = "up" if volume_change > 0 else "down"
+            sentence += f" and volume was **{volume_direction} {abs(volume_change):.1f}%**."
+        else:
+            sentence += "."
+        trend_lead_parts.append(sentence)
+
     lines = [
         "## Executive Summary",
+        "",
+        " ".join(trend_lead_parts),
         "",
         "### Section 1: Period Activity",
         (

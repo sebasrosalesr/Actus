@@ -12,10 +12,10 @@ import numpy as np
 
 from .answer import answer_from_results
 from .analytics import analyze_customer_actus, analyze_item_actus, analyze_ticket_actus
-from .index_build import build_pipeline_artifacts, index_pipeline_artifacts
+from .index_build import build_pipeline_artifacts, build_retrieval_chunks, index_pipeline_artifacts
 from .ingest import load_credit_requests, load_env, load_investigation_notes
 from .models import PipelineArtifacts, RetrievalChunk, SearchResult
-from .snapshot import load_canonical_tickets, save_canonical_tickets
+from .snapshot import load_canonical_ticket_models, save_canonical_tickets
 from .retrieve import (
     analyze_query,
     compute_chunk_type_boost,
@@ -190,6 +190,13 @@ class ActusHybridRAGService:
             )
         return chunks
 
+    def _load_catalog_from_snapshot(self) -> list[RetrievalChunk] | None:
+        try:
+            canonical_tickets = load_canonical_ticket_models()
+        except FileNotFoundError:
+            return None
+        return build_retrieval_chunks(canonical_tickets)
+
     def _update_catalog(self, chunks: list[RetrievalChunk]) -> None:
         with self._lock:
             if self._catalog_chunks is None:
@@ -212,7 +219,9 @@ class ActusHybridRAGService:
         with self._lock:
             has_catalog = self._catalog_chunks is not None
         if not has_catalog:
-            chunks = self._load_catalog_from_sqlite()
+            chunks = self._load_catalog_from_snapshot()
+            if chunks is None:
+                chunks = self._load_catalog_from_sqlite()
             with self._lock:
                 self._catalog_chunks = chunks
                 self._chunk_by_id = {chunk.chunk_id: chunk for chunk in chunks}
@@ -226,7 +235,7 @@ class ActusHybridRAGService:
 
     def _load_canonical_snapshot(self) -> dict[str, Any] | None:
         try:
-            return load_canonical_tickets()
+            return load_canonical_ticket_models()
         except FileNotFoundError:
             return None
         except Exception:

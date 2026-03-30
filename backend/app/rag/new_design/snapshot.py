@@ -7,6 +7,8 @@ import os
 from pathlib import Path
 from typing import Any
 
+from .models import CanonicalTicket, InvestigationChunk, InvestigationNote, TicketLine
+
 
 def default_canonical_snapshot_path() -> Path:
     raw = (
@@ -55,3 +57,90 @@ def load_canonical_tickets(path: str | Path | None = None) -> dict[str, Any]:
     if not isinstance(canonical_tickets, dict):
         raise RuntimeError(f"Canonical snapshot at {target} is invalid.")
     return canonical_tickets
+
+
+def _hydrate_investigation_chunk(payload: Any) -> InvestigationChunk:
+    if isinstance(payload, InvestigationChunk):
+        return payload
+    if not isinstance(payload, dict):
+        raise RuntimeError("Canonical snapshot investigation chunk is invalid.")
+    return InvestigationChunk(**payload)
+
+
+def _hydrate_investigation_note(payload: Any) -> InvestigationNote:
+    if isinstance(payload, InvestigationNote):
+        return payload
+    if not isinstance(payload, dict):
+        raise RuntimeError("Canonical snapshot investigation note is invalid.")
+    return InvestigationNote(**payload)
+
+
+def _hydrate_ticket_line(payload: Any) -> TicketLine:
+    if isinstance(payload, TicketLine):
+        return payload
+    if not isinstance(payload, dict):
+        raise RuntimeError("Canonical snapshot ticket line is invalid.")
+
+    line_payload = dict(payload)
+    line_payload.setdefault("row_index", 0)
+    line_payload.setdefault(
+        "combo_key",
+        f"{line_payload.get('invoice_number') or ''}|{line_payload.get('item_number') or ''}",
+    )
+    line_payload.setdefault("reason_for_credit_raw_list", [])
+    line_payload.setdefault("investigation_notes", [])
+    line_payload.setdefault("investigation_chunks", [])
+    line_payload.setdefault("root_cause_ids", [])
+    line_payload.setdefault("root_cause_labels", [])
+    line_payload.setdefault("root_cause_primary_id", "unidentified")
+    line_payload.setdefault("root_cause_primary_label", "Unidentified")
+    line_payload.setdefault("root_cause_triggers", [])
+    line_payload.setdefault("root_cause_score", 0.0)
+    line_payload.setdefault("credit_request_total", 0.0)
+    line_payload["investigation_chunks"] = [
+        _hydrate_investigation_chunk(value)
+        for value in (line_payload.get("investigation_chunks") or [])
+    ]
+    line_payload["investigation_notes"] = [
+        _hydrate_investigation_note(value)
+        for value in (line_payload.get("investigation_notes") or [])
+    ]
+    return TicketLine(**line_payload)
+
+
+def _hydrate_canonical_ticket(payload: Any) -> CanonicalTicket:
+    if isinstance(payload, CanonicalTicket):
+        return payload
+    if not isinstance(payload, dict):
+        raise RuntimeError("Canonical snapshot ticket payload is invalid.")
+
+    ticket_payload = dict(payload)
+    ticket_payload.setdefault("source_nodes", [])
+    ticket_payload.setdefault("customer_numbers", [])
+    ticket_payload.setdefault("sales_reps", [])
+    ticket_payload.setdefault("invoice_numbers", [])
+    ticket_payload.setdefault("item_numbers", [])
+    ticket_payload.setdefault("credit_numbers", [])
+    ticket_payload.setdefault("credit_request_totals", [])
+    ticket_payload.setdefault("reason_for_credit_raw_list", [])
+    ticket_payload.setdefault("status_raw_list", [])
+    ticket_payload.setdefault("root_cause_ids", [])
+    ticket_payload.setdefault("root_cause_labels", [])
+    ticket_payload.setdefault("root_cause_primary_id", "unidentified")
+    ticket_payload.setdefault("root_cause_primary_label", "Unidentified")
+    ticket_payload.setdefault("root_cause_triggers", [])
+    ticket_payload.setdefault("line_map", {})
+    ticket_payload.setdefault("account_prefixes", [])
+    ticket_payload["line_map"] = {
+        str(combo_key): [_hydrate_ticket_line(line) for line in (lines or [])]
+        for combo_key, lines in (ticket_payload.get("line_map") or {}).items()
+    }
+    return CanonicalTicket(**ticket_payload)
+
+
+def load_canonical_ticket_models(path: str | Path | None = None) -> dict[str, CanonicalTicket]:
+    raw = load_canonical_tickets(path)
+    return {
+        str(ticket_id).strip().upper(): _hydrate_canonical_ticket(ticket_payload)
+        for ticket_id, ticket_payload in raw.items()
+    }

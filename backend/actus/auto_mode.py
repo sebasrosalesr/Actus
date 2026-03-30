@@ -4,6 +4,8 @@ import json
 import logging
 import os
 import re
+import threading
+import time
 from dataclasses import dataclass
 from typing import Any
 from urllib.parse import quote
@@ -17,12 +19,30 @@ from actus.intent_router import (
     _return_with_intent,
     actus_answer,
 )
+from actus.intents.credit_ops_snapshot import _parse_window
 from actus.intents.customer_analysis import _extract_explicit_customer_query, _extract_match_mode
 from actus.intents.item_analysis import _extract_item_number
 from actus.intents.ticket_analysis import _extract_ticket_id
 from actus.openrouter_client import openrouter_chat
 
 LOGGER = logging.getLogger(__name__)
+
+SPECIALIST_CACHE_TTL_SEC = 120
+_SPECIALIST_RESULT_CACHE: dict[tuple[Any, ...], dict[str, Any]] = {}
+_SPECIALIST_RESULT_CACHE_LOCK = threading.Lock()
+_CROSS_REQUEST_CACHEABLE_INTENTS = {
+    "system_updates",
+    "overall_summary",
+    "credit_root_causes",
+    "credit_trends",
+    "credit_anomalies",
+    "credit_aging",
+    "credit_ops_snapshot",
+    "billing_queue_hotspots",
+    "root_cause_rtn_timing",
+    "top_accounts",
+    "top_items",
+}
 
 
 AUTO_FAMILY_ENTITY = "entity"
@@ -531,6 +551,23 @@ def plan_auto_mode(query: str) -> AutoPlan | None:
 
 
 def _execute_planned_intent(plan: PlannedIntent, df: pd.DataFrame) -> SpecialistRun:
+    cache = df.attrs.setdefault("_actus_intent_cache", {}) if isinstance(getattr(df, "attrs", None), dict) else None
+    if isinstance(cache, dict):
+        cached_result = cache.get((plan.id, plan.query))
+        if isinstance(cached_result, tuple) and len(cached_result) == 3:
+            text, rows, meta = cached_result
+            return SpecialistRun(plan=plan, text=text, rows=_clone_cached_rows(rows), meta=_clone_cached_meta(meta))
+
+    cross_request_cached = _get_cached_specialist_run(plan=plan, df=df)
+    if cross_request_cached is not None:
+        if isinstance(cache, dict):
+            cache[(plan.id, plan.query)] = (
+                cross_request_cached.text,
+                cross_request_cached.rows,
+                cross_request_cached.meta,
+            )
+        return cross_request_cached
+
     intent_def = _intent_def_by_id(plan.id)
     if intent_def is None:
         raise RuntimeError(f"Unknown auto intent: {plan.id}")
@@ -538,10 +575,129 @@ def _execute_planned_intent(plan: PlannedIntent, df: pd.DataFrame) -> Specialist
     if result is None:
         raise RuntimeError(f"{plan.id} returned no result")
     text, rows, meta = _return_with_intent(result, intent_id=plan.id, matched_by="auto_mode")
-    cache = df.attrs.setdefault("_actus_intent_cache", {}) if isinstance(getattr(df, "attrs", None), dict) else None
     if isinstance(cache, dict):
         cache[(plan.id, plan.query)] = (text, rows, meta)
-    return SpecialistRun(plan=plan, text=text, rows=rows, meta=meta)
+    run = SpecialistRun(plan=plan, text=text, rows=rows, meta=meta)
+    _store_cached_specialist_run(run=run, df=df)
+    return run
+
+
+def _specialist_cache_enabled() -> bool:
+    raw = os.environ.get("ACTUS_SPECIALIST_CACHE_ENABLED", "1").strip().lower()
+    return raw not in {"0", "false", "no", "off"}
+
+
+def _specialist_cache_ttl_sec() -> int:
+    raw = os.environ.get("ACTUS_SPECIALIST_CACHE_TTL_SEC", "").strip()
+    if raw:
+        try:
+            return max(1, int(raw))
+        except ValueError:
+            return SPECIALIST_CACHE_TTL_SEC
+    return SPECIALIST_CACHE_TTL_SEC
+
+
+def _df_cache_token(df: pd.DataFrame) -> Any:
+    attrs = getattr(df, "attrs", None)
+    if isinstance(attrs, dict) and attrs.get("_actus_df_cache_token") is not None:
+        return attrs.get("_actus_df_cache_token")
+    return id(df)
+
+
+def _window_cache_label(query: str) -> str:
+    try:
+        start, end, raw_label = _parse_window(query)
+    except Exception:
+        return ""
+    start_ts = pd.Timestamp(start).tz_localize(None) if start is not None and not pd.isna(start) and getattr(start, "tzinfo", None) is not None else pd.Timestamp(start) if start is not None and not pd.isna(start) else None
+    end_ts = pd.Timestamp(end).tz_localize(None) if end is not None and not pd.isna(end) and getattr(end, "tzinfo", None) is not None else pd.Timestamp(end) if end is not None and not pd.isna(end) else None
+    if start_ts is None:
+        return str(raw_label or "").strip().lower()
+    if end_ts is None:
+        end_ts = pd.Timestamp.today().normalize()
+    return f"{start_ts.date()}→{end_ts.date()}"
+
+
+def _ranking_scope_key(query: str) -> str:
+    normalized = _normalize_query(query)
+    if any(term in normalized for term in ("open exposure", "open credit", "open credits", "open liability", "open volume")):
+        return "open"
+    if any(term in normalized for term in ("credited", "issued", "credit number", "credit numbers", "rtn", "volume")):
+        return "credited"
+    if "exposure" in normalized or "liability" in normalized:
+        return "open"
+    return "credited"
+
+
+def _specialist_cache_signature(plan: PlannedIntent) -> tuple[Any, ...]:
+    window = _window_cache_label(plan.query)
+    if plan.id in {
+        "system_updates",
+        "overall_summary",
+        "credit_root_causes",
+        "credit_trends",
+        "credit_anomalies",
+        "credit_aging",
+        "credit_ops_snapshot",
+        "billing_queue_hotspots",
+        "root_cause_rtn_timing",
+    }:
+        return (plan.id, window)
+    if plan.id in {"top_accounts", "top_items"}:
+        return (plan.id, window, _ranking_scope_key(plan.query))
+    return (plan.id, _normalize_query(plan.query))
+
+
+def _specialist_cache_key(*, plan: PlannedIntent, df: pd.DataFrame) -> tuple[Any, ...]:
+    return (_df_cache_token(df),) + _specialist_cache_signature(plan)
+
+
+def _clone_cached_rows(rows: pd.DataFrame | None) -> pd.DataFrame | None:
+    if isinstance(rows, pd.DataFrame):
+        return rows.copy(deep=False)
+    return rows
+
+
+def _clone_cached_meta(meta: dict[str, Any]) -> dict[str, Any]:
+    return dict(meta) if isinstance(meta, dict) else {}
+
+
+def _get_cached_specialist_run(*, plan: PlannedIntent, df: pd.DataFrame) -> SpecialistRun | None:
+    if not _specialist_cache_enabled() or plan.id not in _CROSS_REQUEST_CACHEABLE_INTENTS:
+        return None
+    key = _specialist_cache_key(plan=plan, df=df)
+    now = time.monotonic()
+    ttl = float(_specialist_cache_ttl_sec())
+    with _SPECIALIST_RESULT_CACHE_LOCK:
+        expired = [
+            cache_key
+            for cache_key, item in _SPECIALIST_RESULT_CACHE.items()
+            if (now - float(item.get("stored_at", 0.0))) >= ttl
+        ]
+        for cache_key in expired:
+            _SPECIALIST_RESULT_CACHE.pop(cache_key, None)
+        cached = _SPECIALIST_RESULT_CACHE.get(key)
+    if not isinstance(cached, dict):
+        return None
+    return SpecialistRun(
+        plan=plan,
+        text=str(cached.get("text") or ""),
+        rows=_clone_cached_rows(cached.get("rows")),
+        meta=_clone_cached_meta(cached.get("meta") if isinstance(cached.get("meta"), dict) else {}),
+    )
+
+
+def _store_cached_specialist_run(*, run: SpecialistRun, df: pd.DataFrame) -> None:
+    if not _specialist_cache_enabled() or run.plan.id not in _CROSS_REQUEST_CACHEABLE_INTENTS:
+        return
+    key = _specialist_cache_key(plan=run.plan, df=df)
+    with _SPECIALIST_RESULT_CACHE_LOCK:
+        _SPECIALIST_RESULT_CACHE[key] = {
+            "stored_at": time.monotonic(),
+            "text": run.text,
+            "rows": _clone_cached_rows(run.rows),
+            "meta": _clone_cached_meta(run.meta),
+        }
 
 
 def _format_money(value: Any) -> str:

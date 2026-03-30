@@ -116,6 +116,9 @@ class TestAutoModePlanner(unittest.TestCase):
 
 
 class TestAutoModeExecution(unittest.TestCase):
+    def setUp(self) -> None:
+        auto_mode._SPECIALIST_RESULT_CACHE.clear()
+
     def test_partial_failure_returns_successful_specialists(self) -> None:
         def fake_ticket(_query: str, _df: pd.DataFrame):
             return (
@@ -308,6 +311,128 @@ class TestAutoModeExecution(unittest.TestCase):
         self.assertEqual("auto_mode", meta.get("intent_id"))
         self.assertIn("## Executive Summary", text)
         self.assertIn("Auto Mode reviewed `R-067298`", text)
+
+    def test_system_updates_reuses_cross_request_cache_for_same_window(self) -> None:
+        calls = {"count": 0}
+
+        def fake_system_updates(query: str, _df: pd.DataFrame):
+            calls["count"] += 1
+            return (
+                f"system updates for {query}",
+                None,
+                {
+                    "system_updates_summary": {
+                        "window": "2026-01-01 → 2026-03-31",
+                        "total_records": 10,
+                        "credit_total": 1000.0,
+                        "avg_days_to_system_credit": 12.3,
+                        "median_days_to_system_credit": 10.5,
+                        "outlier_count": 1,
+                        "outlier_ticket_ids": ["R-000001"],
+                        "batch_dates": 2,
+                        "batched_dates": 1,
+                        "batched_records": 9,
+                        "batched_credit_total": 900.0,
+                        "largest_batch_count": 9,
+                        "largest_batch_date": "2026-02-01",
+                        "largest_batch_credit_total": 900.0,
+                        "manual_record_count": 0,
+                        "manual_credit_total": 0.0,
+                        "manual_avg_days_to_update": 0.0,
+                        "manual_outlier_count": 0,
+                        "manual_outlier_ticket_ids": [],
+                    }
+                },
+            )
+
+        fake_defs = [
+            {
+                "id": "system_updates",
+                "label": "System updates with RTN",
+                "prefix": "system updates",
+                "func": fake_system_updates,
+                "aliases": [],
+            },
+        ]
+        df = pd.DataFrame()
+        df.attrs["_actus_df_cache_token"] = "token-1"
+
+        with patch.object(auto_mode, "INTENT_DEFS", fake_defs):
+            with patch("actus.auto_mode.openrouter_chat", side_effect=AssertionError("LLM should not run")):
+                first_text, _rows, first_meta = auto_mode.auto_mode_answer(
+                    "show me system RTN updates analysis from 2026-01-01 to 2026-03-31",
+                    df,
+                )
+                second_text, _rows, second_meta = auto_mode.auto_mode_answer(
+                    "system rtn updates analysis from 2026-01-01 to 2026-03-31",
+                    df,
+                )
+
+        self.assertEqual(1, calls["count"])
+        self.assertEqual("auto_mode", first_meta.get("intent_id"))
+        self.assertEqual("auto_mode", second_meta.get("intent_id"))
+        self.assertIn("## Executive Summary", first_text)
+        self.assertIn("## Executive Summary", second_text)
+
+    def test_overall_summary_reuses_cross_request_cache_for_same_window(self) -> None:
+        calls = {"count": 0}
+
+        def fake_overall_summary(query: str, _df: pd.DataFrame):
+            calls["count"] += 1
+            return (
+                f"overview for {query}",
+                None,
+                {
+                    "overall_summary": {
+                        "window": "2026-02-26 → 2026-03-29",
+                        "open_record_count": 198,
+                        "open_credit_total": 19677.83,
+                        "avg_days_open": 8.7,
+                        "avg_days_since_last_status": 7.7,
+                        "billing_queue_delay_count": 34,
+                        "billing_queue_delay_total": 4150.24,
+                        "stale_investigation_count": 38,
+                        "stale_investigation_total": 2572.62,
+                        "credited_in_period": {
+                            "credited_record_count": 175,
+                            "credited_credit_total": 32309.15,
+                            "primary_system_record_count": 175,
+                            "primary_system_credit_total": 32309.15,
+                            "primary_manual_record_count": 0,
+                            "primary_manual_credit_total": 0.0,
+                            "avg_days_to_rtn_assignment": 26.2,
+                            "reopened_after_terminal_count": 2,
+                        },
+                    }
+                },
+            )
+
+        fake_defs = [
+            {
+                "id": "overall_summary",
+                "label": "Credit overview",
+                "prefix": "credit overview",
+                "func": fake_overall_summary,
+                "aliases": [],
+            },
+        ]
+        df = pd.DataFrame()
+        df.attrs["_actus_df_cache_token"] = "token-1"
+
+        with patch.object(auto_mode, "INTENT_DEFS", fake_defs):
+            with patch("actus.auto_mode.openrouter_chat", side_effect=AssertionError("LLM should not run")):
+                first_text, _rows, _meta = auto_mode.auto_mode_answer(
+                    "give me a credit overview from 2026-02-26 to 2026-03-29",
+                    df,
+                )
+                second_text, _rows, _meta = auto_mode.auto_mode_answer(
+                    "show me a credit summary from 2026-02-26 to 2026-03-29",
+                    df,
+                )
+
+        self.assertEqual(1, calls["count"])
+        self.assertIn("### Section 1: Period Activity", first_text)
+        self.assertIn("### Section 1: Period Activity", second_text)
 
     def test_investigation_note_preview_bullets_strip_action_tokens(self) -> None:
         bullets = auto_mode._investigation_note_bullets(

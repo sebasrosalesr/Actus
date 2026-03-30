@@ -541,11 +541,15 @@ def _get_df() -> pd.DataFrame:
     now = time.time()
     cached = _CACHE["df"]
     if cached is not None and now - _CACHE["loaded_at"] < DATA_TTL_SEC:
+        if isinstance(getattr(cached, "attrs", None), dict):
+            cached.attrs.setdefault("_actus_df_cache_token", round(float(_CACHE["loaded_at"]), 3))
         return cached
 
     df_ = _load_firebase_df()
     _CACHE["df"] = df_
     _CACHE["loaded_at"] = now
+    if isinstance(getattr(df_, "attrs", None), dict):
+        df_.attrs["_actus_df_cache_token"] = round(float(now), 3)
     return df_
 
 

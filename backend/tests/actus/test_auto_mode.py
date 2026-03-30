@@ -573,6 +573,52 @@ class TestAutoModeExecution(unittest.TestCase):
         self.assertIn("All credited activity in the period was system-led: **175** record(s) / **$32,309.15**; manual-led activity was **0** record(s) / **$0.00**.", text)
         self.assertNotIn("## Key Findings By Specialist", text)
 
+    def test_single_portfolio_prompt_uses_deterministic_renderer(self) -> None:
+        plan = auto_mode.AutoPlan(
+            family="portfolio",
+            primary_intent="credit_root_causes",
+            target_label=None,
+            intents=(
+                auto_mode.PlannedIntent("credit_root_causes", "Root causes", "root causes"),
+            ),
+            suggestions=(),
+        )
+
+        run = auto_mode.SpecialistRun(
+            plan=plan.intents[0],
+            text="root causes",
+            rows=None,
+            meta={
+                "rootCauses": {
+                    "period": "2026-01-01 → 2026-03-31",
+                    "total": "$37,973.15",
+                    "data": [
+                        {"root_cause": "Item should be PPD", "credit_request_total": 23278.10, "record_count": 245},
+                        {"root_cause": "Item not price matched when subbing", "credit_request_total": 10561.02, "record_count": 97},
+                    ],
+                }
+            },
+        )
+
+        def fake_execute(_planned_intent: auto_mode.PlannedIntent, _df: pd.DataFrame):
+            return run
+
+        with patch("actus.auto_mode.plan_auto_mode", return_value=plan):
+            with patch("actus.auto_mode._execute_planned_intent", side_effect=fake_execute):
+                with patch("actus.auto_mode.openrouter_chat", side_effect=AssertionError("LLM should not run")):
+                    text, rows, meta = auto_mode.auto_mode_answer(
+                        "what are the main root causes driving open exposure this quarter",
+                        pd.DataFrame(),
+                    )
+
+        self.assertIsNone(rows)
+        self.assertEqual("auto_mode", meta.get("intent_id"))
+        self.assertIn("## Executive Summary", text)
+        self.assertIn("Auto Mode ran **1/1** portfolio specialist(s)", text)
+        self.assertIn("### Root causes", text)
+        self.assertIn("Item should be PPD", text)
+        self.assertIn("## Recommended Follow-Ups", text)
+
     def test_overview_with_trends_renders_overview_led_brief(self) -> None:
         plan = auto_mode.AutoPlan(
             family="portfolio",

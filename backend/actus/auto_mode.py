@@ -1660,19 +1660,28 @@ def auto_mode_answer(query: str, df: pd.DataFrame) -> tuple[str, pd.DataFrame | 
             suggestions=suggestions,
         )
     if text is None:
-        text = _llm_synthesize_auto_answer(
-            query=query,
-            plan=plan,
-            successful_runs=successful_runs,
-            failed_runs=failed_runs,
-            suggestions=suggestions,
-        ) or _deterministic_auto_answer(
-            query=query,
-            plan=plan,
-            successful_runs=successful_runs,
-            failed_runs=failed_runs,
-            suggestions=suggestions,
-        )
+        if plan.family == AUTO_FAMILY_PORTFOLIO:
+            text = _deterministic_auto_answer(
+                query=query,
+                plan=plan,
+                successful_runs=successful_runs,
+                failed_runs=failed_runs,
+                suggestions=suggestions,
+            )
+        else:
+            text = _llm_synthesize_auto_answer(
+                query=query,
+                plan=plan,
+                successful_runs=successful_runs,
+                failed_runs=failed_runs,
+                suggestions=suggestions,
+            ) or _deterministic_auto_answer(
+                query=query,
+                plan=plan,
+                successful_runs=successful_runs,
+                failed_runs=failed_runs,
+                suggestions=suggestions,
+            )
 
     meta: dict[str, Any] = {
         "intent_id": "auto_mode",

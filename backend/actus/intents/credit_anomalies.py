@@ -1,6 +1,7 @@
 import re
 import pandas as pd
 
+from actus.intents.credit_ops_snapshot import _parse_window
 from actus.utils.df_cleaning import coerce_date
 from actus.utils.formatting import format_money
 
@@ -23,6 +24,15 @@ SHORTCUT_ALIASES = (
     "anomaly scan",
     "outliers",
 )
+
+
+def _naive_day(value: pd.Timestamp | None) -> pd.Timestamp | None:
+    if value is None or pd.isna(value):
+        return None
+    ts = pd.Timestamp(value)
+    if ts.tzinfo is not None:
+        ts = ts.tz_localize(None)
+    return ts.normalize()
 
 
 def intent_credit_anomalies(query: str, df: pd.DataFrame):
@@ -55,9 +65,7 @@ def intent_credit_anomalies(query: str, df: pd.DataFrame):
     ):
         return None
 
-    shortcut_request = len(normalized.split()) <= 4 and any(
-        alias in normalized for alias in SHORTCUT_ALIASES
-    )
+    shortcut_request = any(alias in normalized for alias in SHORTCUT_ALIASES)
 
     if "credit" not in q_low and "ticket" not in q_low and not shortcut_request:
         # Let other intents try if it's not clearly about credits
@@ -77,13 +85,28 @@ def intent_credit_anomalies(query: str, df: pd.DataFrame):
     if dv.empty:
         return "I don't have any dated records to run anomaly detection."
 
-    # Last 90 days window
     latest = dv["Date"].max().normalize()
-    cutoff = latest - pd.Timedelta(days=90)
-    recent = dv[dv["Date"].between(cutoff, latest)].copy()
+    start, end, raw_label = _parse_window(query)
+    start_ts = _naive_day(start)
+    end_ts = _naive_day(end)
+
+    if start_ts is not None:
+        cutoff = start_ts
+        window_end = end_ts or latest
+        if window_end < cutoff:
+            window_end = cutoff
+        recent = dv[dv["Date"].between(cutoff, window_end)].copy()
+        window_label = f"{cutoff.date()} → {window_end.date()}"
+        window_title = raw_label or window_label
+    else:
+        cutoff = latest - pd.Timedelta(days=90)
+        window_end = latest
+        recent = dv[dv["Date"].between(cutoff, latest)].copy()
+        window_label = f"{cutoff.date()} → {latest.date()}"
+        window_title = "Last 90 Days"
 
     if recent.empty:
-        return "There are no credit records in the last 90 days to analyze."
+        return f"There are no credit records in {window_title.lower()} to analyze."
 
     # Numeric credits
     recent["Credit Request Total"] = pd.to_numeric(
@@ -118,7 +141,7 @@ def intent_credit_anomalies(query: str, df: pd.DataFrame):
 
     if anomalies.empty:
         return (
-            "I don't see any large or statistically unusual credits in the last 90 days "
+            f"I don't see any large or statistically unusual credits in {window_title.lower()} "
             f"(amount ≥ {format_money(base_amount_threshold)} with |z| ≥ {z_threshold}, "
             f"or any credits ≥ {format_money(hard_cap)})."
         )
@@ -166,8 +189,8 @@ def intent_credit_anomalies(query: str, df: pd.DataFrame):
 
     lines: list[str] = []
 
-    lines.append("🚨 **Credit Anomaly Scan – Last 90 Days**")
-    lines.append(f"- Window analyzed: **{cutoff.date()} → {latest.date()}**")
+    lines.append(f"🚨 **Credit Anomaly Scan – {window_title}**")
+    lines.append(f"- Window analyzed: **{window_label}**")
     lines.append(
         f"- Anomalous credits found: **{total_anom}** "
         f"totalling **{format_money(total_anom_amt)}**"
@@ -251,5 +274,11 @@ def intent_credit_anomalies(query: str, df: pd.DataFrame):
             "csv_row_count": int(len(csv_rows)),
             "columns": preview_cols,
             "csv_filename": "credit_anomalies.csv",
+            "creditAnomalies": {
+                "window": window_label,
+                "window_title": window_title,
+                "record_count": int(total_anom),
+                "credit_total": float(total_anom_amt),
+            },
         },
     )

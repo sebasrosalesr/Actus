@@ -539,6 +539,32 @@ def _format_money(value: Any) -> str:
     return f"${amount:,.2f}"
 
 
+def _format_count(value: Any) -> str:
+    try:
+        count = int(float(value))
+    except (TypeError, ValueError):
+        return "0"
+    return f"{count:,}"
+
+
+def _format_calendar_date(value: Any) -> str:
+    try:
+        ts = pd.to_datetime(value, errors="raise")
+    except Exception:
+        return str(value or "").strip()
+    if pd.isna(ts):
+        return str(value or "").strip()
+    return f"{ts.strftime('%B')} {int(ts.day)}, {int(ts.year)}"
+
+
+def _humanize_window_label(value: Any) -> str:
+    text = str(value or "").strip()
+    if not text or "→" not in text:
+        return text
+    start_text, end_text = [part.strip() for part in text.split("→", 1)]
+    return f"{_format_calendar_date(start_text)} – {_format_calendar_date(end_text)}"
+
+
 def _humanize_identifier(value: Any) -> str:
     text = str(value or "").strip()
     if not text:
@@ -745,9 +771,15 @@ def _anomaly_bullets(meta: dict[str, Any], rows: pd.DataFrame | None) -> list[st
     frame = rows if isinstance(rows, pd.DataFrame) else pd.DataFrame()
     preview_count = int(len(frame.index))
     total_count = int(meta.get("csv_row_count") or preview_count)
-    bullets = [
-        f"Anomaly scan flagged **{total_count}** row(s) for review; the preview includes **{preview_count}** row(s).",
-    ]
+    payload = meta.get("creditAnomalies")
+    if isinstance(payload, dict) and payload.get("window"):
+        bullets = [
+            f"In **{payload.get('window')}**, anomaly scan flagged **{total_count}** row(s) for review; the preview includes **{preview_count}** row(s).",
+        ]
+    else:
+        bullets = [
+            f"Anomaly scan flagged **{total_count}** row(s) for review; the preview includes **{preview_count}** row(s).",
+        ]
     if not frame.empty:
         amount_col = "Credit Request Total" if "Credit Request Total" in frame.columns else None
         if amount_col:
@@ -891,27 +923,12 @@ def _overall_summary_bullets(meta: dict[str, Any], text: str) -> list[str]:
             f"Average open age is **{float(payload.get('avg_days_open') or 0.0):.1f}** day(s) with **{float(payload.get('avg_days_since_last_status') or 0.0):.1f}** day(s) since the last update; billing queue delay affects **{int(payload.get('billing_queue_delay_count') or 0)}** record(s) totaling **{_format_money(payload.get('billing_queue_delay_total'))}**, and stale investigation affects **{int(payload.get('stale_investigation_count') or 0)}** record(s) totaling **{_format_money(payload.get('stale_investigation_total'))}**."
         )
         bullets.append(
-            f"What was credited in period includes **{_format_money(credited.get('credited_credit_total'))}** across **{int(credited.get('credited_record_count') or 0)}** unique record(s); average time to RTN assignment is **{float(credited.get('avg_days_to_rtn_assignment') or 0.0):.1f}** day(s)."
+            f"What was credited in period: **{_format_money(credited.get('credited_credit_total'))}** across **{int(credited.get('credited_record_count') or 0)}** unique record(s); average time to RTN assignment is **{float(credited.get('avg_days_to_rtn_assignment') or 0.0):.1f}** day(s)."
+        )
+        bullets.append(
+            f"Primary attribution is **system-led {int(credited.get('primary_system_record_count') or 0)} / {_format_money(credited.get('primary_system_credit_total'))}** and **manual-led {int(credited.get('primary_manual_record_count') or 0)} / {_format_money(credited.get('primary_manual_credit_total'))}**; reopened after terminal totals **{int(credited.get('reopened_after_terminal_count') or 0)}** record(s)."
         )
 
-        top_customer = (payload.get("top_customers") or [{}])[0]
-        top_item = (payload.get("top_items") or [{}])[0]
-        top_root = (payload.get("top_root_causes") or [{}])[0]
-        summary_bits: list[str] = []
-        if isinstance(top_customer, dict) and top_customer.get("label"):
-            summary_bits.append(
-                f"top customer is **{top_customer['label']}** at **{_format_money(top_customer.get('credit_total'))}**"
-            )
-        if isinstance(top_item, dict) and top_item.get("label"):
-            summary_bits.append(
-                f"top item is **{top_item['label']}** at **{_format_money(top_item.get('credit_total'))}**"
-            )
-        if isinstance(top_root, dict) and top_root.get("root_cause"):
-            summary_bits.append(
-                f"leading root cause is **{top_root['root_cause']}** with **{int(top_root.get('record_count') or 0)}** record(s)"
-            )
-        if summary_bits:
-            bullets.append("In scope, " + "; ".join(summary_bits) + ".")
         return bullets[:4]
     return _generic_text_bullets(text, max_items=4)
 
@@ -1127,6 +1144,217 @@ def _render_auto_answer(
     return "\n".join(lines).strip()
 
 
+def _render_portfolio_credit_brief(
+    *,
+    plan: AutoPlan,
+    successful_runs: list[SpecialistRun],
+    failed_runs: list[PlannedIntent],
+    suggestions: list[dict[str, str]],
+) -> str | None:
+    if plan.family != AUTO_FAMILY_PORTFOLIO:
+        return None
+
+    ids = [run.plan.id for run in successful_runs]
+    if set(ids) != {"overall_summary", "system_updates", "credit_root_causes"} or len(ids) != 3:
+        return None
+
+    run_by_id = {run.plan.id: run for run in successful_runs}
+    overall_payload = run_by_id["overall_summary"].meta.get("overall_summary")
+    system_payload = run_by_id["system_updates"].meta.get("system_updates_summary")
+    root_payload = run_by_id["credit_root_causes"].meta.get("rootCauses")
+    if not isinstance(overall_payload, dict) or not isinstance(system_payload, dict) or not isinstance(root_payload, dict):
+        return None
+
+    credited = overall_payload.get("credited_in_period")
+    if not isinstance(credited, dict):
+        credited = {}
+
+    window = str(overall_payload.get("window") or system_payload.get("window") or root_payload.get("period") or "the selected period").strip()
+    human_window = _humanize_window_label(window) or window
+
+    system_outlier_ids = [str(item).strip() for item in (system_payload.get("outlier_ticket_ids") or []) if str(item).strip()]
+    manual_outlier_ids = [str(item).strip() for item in (system_payload.get("manual_outlier_ticket_ids") or []) if str(item).strip()]
+
+    lines = [
+        "## Executive Summary",
+        f"Period: {human_window}",
+        "",
+        "### Section 1: Volume & Activity",
+        (
+            f"In the period {human_window}, **{_format_count(credited.get('credited_record_count'))}** unique RTN record(s) "
+            f"were credited totaling **{_format_money(credited.get('credited_credit_total'))}**. "
+            f"Of those, **{_format_count(overall_payload.get('open_record_count'))}** record(s) totaling "
+            f"**{_format_money(overall_payload.get('open_credit_total'))}** remain open."
+        ),
+        "",
+        "### Section 2: Time-to-Resolution",
+        (
+            f"Average time from entry to credit was **{float(credited.get('avg_days_to_rtn_assignment') or 0.0):.1f}** day(s). "
+            f"For system-processed records, the average was **{float(system_payload.get('avg_days_to_system_credit') or 0.0):.1f}** day(s) "
+            f"with a median of **{float(system_payload.get('median_days_to_system_credit') or 0.0):.1f}** day(s). "
+            f"For manually assigned records, the average from entry to RTN assignment was "
+            f"**{float(system_payload.get('manual_avg_days_to_update') or 0.0):.1f}** day(s)."
+        ),
+    ]
+
+    if int(system_payload.get("outlier_count") or 0) > 0:
+        lines.extend(
+            [
+                "",
+                f"System outliers ({int(system_payload.get('outlier_count') or 0)}):",
+                ", ".join(system_outlier_ids),
+            ]
+        )
+    if int(system_payload.get("manual_outlier_count") or 0) > 0:
+        lines.extend(
+            [
+                "",
+                f"Manual outliers ({int(system_payload.get('manual_outlier_count') or 0)}):",
+                ", ".join(manual_outlier_ids),
+            ]
+        )
+    lines.append("")
+    lines.append(
+        (
+            f"Processing note: **{_format_count(system_payload.get('batch_dates'))}** batch update date(s) were recorded, "
+            f"with **{_format_count(system_payload.get('batched_dates'))}** multi-record batch(es) affecting "
+            f"**{_format_count(system_payload.get('batched_records'))}** record(s) / **{_format_money(system_payload.get('batched_credit_total'))}**; "
+            f"the largest single batch was **{_format_count(system_payload.get('largest_batch_count'))}** record(s) on "
+            f"**{system_payload.get('largest_batch_date') or 'N/A'}** totaling **{_format_money(system_payload.get('largest_batch_credit_total'))}**."
+        )
+    )
+    lines.extend(
+        [
+            "",
+            "### Section 3: Open Exposure",
+            (
+                f"**{_format_count(overall_payload.get('open_record_count'))}** record(s) totaling "
+                f"**{_format_money(overall_payload.get('open_credit_total'))}** remain open. "
+                f"Average open age is **{float(overall_payload.get('avg_days_open') or 0.0):.1f}** day(s), with "
+                f"**{float(overall_payload.get('avg_days_since_last_status') or 0.0):.1f}** day(s) since the last update."
+            ),
+            (
+                f"Billing queue delay affects **{_format_count(overall_payload.get('billing_queue_delay_count'))}** record(s) totaling "
+                f"**{_format_money(overall_payload.get('billing_queue_delay_total'))}**, and stale investigation affects "
+                f"**{_format_count(overall_payload.get('stale_investigation_count'))}** record(s) totaling "
+                f"**{_format_money(overall_payload.get('stale_investigation_total'))}**."
+            ),
+            f"Reopened after terminal: **{_format_count(credited.get('reopened_after_terminal_count'))}** record(s).",
+            "",
+            "### Section 4: Root Causes",
+            f"Total exposure across root-cause groups is **{root_payload.get('total') or 'N/A'}**.",
+            "",
+        ]
+    )
+
+    for item in (root_payload.get("data") or [])[:3]:
+        if not isinstance(item, dict):
+            continue
+        lines.append(
+            f"- **{item.get('root_cause') or 'Unspecified'}**: **{_format_money(item.get('credit_request_total'))}** across **{_format_count(item.get('record_count'))}** record(s)"
+        )
+
+    if failed_runs:
+        lines.extend(["", "### Execution Status"])
+        for item in failed_runs:
+            lines.append(f"- {item.label} did not complete during this Auto run.")
+
+    lines.extend(["", "## Recommended Follow-Ups"])
+    follow_up_lines = _render_follow_up_links(suggestions)
+    if follow_up_lines:
+        lines.extend(follow_up_lines)
+    else:
+        lines.append("- No additional follow-ups were suggested for this request.")
+
+    return "\n".join(lines).strip()
+
+
+def _render_overall_summary_brief(
+    *,
+    plan: AutoPlan,
+    successful_runs: list[SpecialistRun],
+    failed_runs: list[PlannedIntent],
+    suggestions: list[dict[str, str]],
+) -> str | None:
+    if plan.family != AUTO_FAMILY_PORTFOLIO:
+        return None
+    if len(successful_runs) != 1 or successful_runs[0].plan.id != "overall_summary":
+        return None
+
+    payload = successful_runs[0].meta.get("overall_summary")
+    if not isinstance(payload, dict):
+        return None
+    credited = payload.get("credited_in_period")
+    if not isinstance(credited, dict):
+        credited = {}
+
+    window = str(payload.get("window") or "the selected period").strip()
+    human_window = _humanize_window_label(window) or window
+
+    manual_count = _format_count(credited.get("primary_manual_record_count"))
+    manual_total = _format_money(credited.get("primary_manual_credit_total"))
+    system_count = _format_count(credited.get("primary_system_record_count"))
+    system_total = _format_money(credited.get("primary_system_credit_total"))
+
+    if float(credited.get("primary_manual_credit_total") or 0.0) == 0.0:
+        attribution_line = (
+            f"All credited activity in the period was system-led: **{system_count}** record(s) / **{system_total}**; "
+            f"manual-led activity was **{manual_count}** record(s) / **{manual_total}**."
+        )
+    else:
+        attribution_line = (
+            f"Primary attribution was system-led **{system_count}** record(s) / **{system_total}** and "
+            f"manual-led **{manual_count}** record(s) / **{manual_total}**."
+        )
+
+    lines = [
+        "## Executive Summary",
+        "",
+        "### Section 1: Period Activity",
+        (
+            f"In {human_window}, **{_format_count(credited.get('credited_record_count'))}** unique record(s) were credited totaling "
+            f"**{_format_money(credited.get('credited_credit_total'))}**. During the same period, "
+            f"**{_format_count(payload.get('open_record_count'))}** record(s) remained open totaling "
+            f"**{_format_money(payload.get('open_credit_total'))}**."
+        ),
+        "",
+        "### Section 2: Time-to-Resolution",
+        (
+            f"Average open age was **{float(payload.get('avg_days_open') or 0.0):.1f}** day(s), with "
+            f"**{float(payload.get('avg_days_since_last_status') or 0.0):.1f}** day(s) since the last update. "
+            f"Average time to RTN assignment was **{float(credited.get('avg_days_to_rtn_assignment') or 0.0):.1f}** day(s)."
+        ),
+        "",
+        "### Section 3: Open Exposure",
+        (
+            f"Open exposure totaled **{_format_money(payload.get('open_credit_total'))}** across "
+            f"**{_format_count(payload.get('open_record_count'))}** record(s). "
+            f"Billing queue delay affects **{_format_count(payload.get('billing_queue_delay_count'))}** record(s) totaling "
+            f"**{_format_money(payload.get('billing_queue_delay_total'))}**, and stale investigation affects "
+            f"**{_format_count(payload.get('stale_investigation_count'))}** record(s) totaling "
+            f"**{_format_money(payload.get('stale_investigation_total'))}**."
+        ),
+        f"Reopened after terminal totals **{_format_count(credited.get('reopened_after_terminal_count'))}** record(s).",
+        "",
+        "### Section 4: Attribution",
+        attribution_line,
+    ]
+
+    if failed_runs:
+        lines.extend(["", "### Execution Status"])
+        for item in failed_runs:
+            lines.append(f"- {item.label} did not complete during this Auto run.")
+
+    lines.extend(["", "## Recommended Follow-Ups"])
+    follow_up_lines = _render_follow_up_links(suggestions)
+    if follow_up_lines:
+        lines.extend(follow_up_lines)
+    else:
+        lines.append("- No additional follow-ups were suggested for this request.")
+
+    return "\n".join(lines).strip()
+
+
 def _deterministic_auto_answer(
     *,
     query: str,
@@ -1279,19 +1507,33 @@ def auto_mode_answer(query: str, df: pd.DataFrame) -> tuple[str, pd.DataFrame | 
     ]
     suggestions = _merge_suggestions(list(plan.suggestions), result_suggestions)
 
-    text = _llm_synthesize_auto_answer(
-        query=query,
-        plan=plan,
-        successful_runs=successful_runs,
-        failed_runs=failed_runs,
-        suggestions=suggestions,
-    ) or _deterministic_auto_answer(
-        query=query,
+    text = _render_portfolio_credit_brief(
         plan=plan,
         successful_runs=successful_runs,
         failed_runs=failed_runs,
         suggestions=suggestions,
     )
+    if text is None:
+        text = _render_overall_summary_brief(
+            plan=plan,
+            successful_runs=successful_runs,
+            failed_runs=failed_runs,
+            suggestions=suggestions,
+        )
+    if text is None:
+        text = _llm_synthesize_auto_answer(
+            query=query,
+            plan=plan,
+            successful_runs=successful_runs,
+            failed_runs=failed_runs,
+            suggestions=suggestions,
+        ) or _deterministic_auto_answer(
+            query=query,
+            plan=plan,
+            successful_runs=successful_runs,
+            failed_runs=failed_runs,
+            suggestions=suggestions,
+        )
 
     meta: dict[str, Any] = {
         "intent_id": "auto_mode",

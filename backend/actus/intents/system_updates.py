@@ -314,6 +314,43 @@ def _extract_manual_rtn_update(status_text: str) -> tuple[Optional[str], str, st
     )
 
 
+def _reopened_after_manual_terminal(status_text: str) -> bool:
+    entries = _parse_status_entries(status_text)
+    if not entries:
+        return False
+
+    terminal_manual_active = False
+    for _ts_text, msg in entries:
+        if _is_reset_after_terminal(msg):
+            if terminal_manual_active:
+                return True
+            continue
+        event_type = _classify_status_entry(msg)
+        if event_type in {"manual_credit_number", "manual_closure"}:
+            terminal_manual_active = True
+    return False
+
+
+def _primary_update_source(
+    manual_time: pd.Timestamp | None,
+    system_time: pd.Timestamp | None,
+    *,
+    reopened_after_terminal: bool,
+) -> str:
+    manual_ts = _naive_ts(manual_time)
+    system_ts = _naive_ts(system_time)
+
+    if manual_ts is not None and system_ts is not None:
+        if reopened_after_terminal and system_ts > manual_ts:
+            return "system"
+        return "system" if system_ts <= manual_ts else "manual"
+    if system_ts is not None:
+        return "system"
+    if manual_ts is not None:
+        return "manual"
+    return ""
+
+
 def _outlier_mask(series: pd.Series) -> pd.Series:
     numeric = pd.to_numeric(series, errors="coerce")
     if numeric.dropna().empty:
@@ -436,6 +473,15 @@ def intent_system_updates(query: str, df: pd.DataFrame):
     df_use["Manual_Resolved_Date"] = manual_updates.apply(lambda item: item[3])
     df_use["Manual_Closed_Date"] = manual_updates.apply(lambda item: item[4])
     df_use["Manual_Update_Time"] = pd.to_datetime(df_use["Manual_Update_Time_Str"], errors="coerce")
+    df_use["Reopened_After_Terminal"] = status_series.apply(_reopened_after_manual_terminal)
+    df_use["Primary_Update_Source"] = df_use.apply(
+        lambda row: _primary_update_source(
+            row.get("Manual_Update_Time"),
+            row.get("System_Update_Time"),
+            reopened_after_terminal=bool(row.get("Reopened_After_Terminal")),
+        ),
+        axis=1,
+    )
     df_use["Last_Status_Time_Str"] = last_statuses.apply(lambda item: item[0])
     df_use["Last_Status_Message"] = last_statuses.apply(lambda item: item[1])
     df_use["Last_Status_Time"] = pd.to_datetime(df_use["Last_Status_Time_Str"], errors="coerce")
@@ -448,6 +494,8 @@ def intent_system_updates(query: str, df: pd.DataFrame):
     system_rows["Update Event Type"] = system_rows["System_Update_Type"]
     system_rows["Mentioned Resolved Date"] = system_rows["System_Resolved_Date"]
     system_rows["Mentioned Closed Date"] = system_rows["System_Closed_Date"]
+    system_rows["Primary Update Source"] = system_rows["Primary_Update_Source"]
+    system_rows["Reopened After Terminal"] = system_rows["Reopened_After_Terminal"]
 
     manual_rows = df_use[rtn_mask & df_use["Manual_Update_Time"].notna()].copy()
     manual_rows["Update Source"] = "manual"
@@ -456,6 +504,8 @@ def intent_system_updates(query: str, df: pd.DataFrame):
     manual_rows["Update Event Type"] = manual_rows["Manual_Update_Type"]
     manual_rows["Mentioned Resolved Date"] = manual_rows["Manual_Resolved_Date"]
     manual_rows["Mentioned Closed Date"] = manual_rows["Manual_Closed_Date"]
+    manual_rows["Primary Update Source"] = manual_rows["Primary_Update_Source"]
+    manual_rows["Reopened After Terminal"] = manual_rows["Reopened_After_Terminal"]
 
     filtered = pd.concat([system_rows, manual_rows], ignore_index=True, sort=False)
     if not filtered.empty:
@@ -546,6 +596,8 @@ def intent_system_updates(query: str, df: pd.DataFrame):
         "Update Source",
         "Update Mix Status",
         "Update Event Type",
+        "Primary Update Source",
+        "Reopened After Terminal",
         "Update Event Time",
         "Mentioned Resolved Date",
         "Mentioned Closed Date",

@@ -71,6 +71,8 @@ class TestOverallSummaryIntent(unittest.TestCase):
                         "RTN_CR_No": "CR-9",
                         "Credit Request Total": 150.0,
                         "Update Source": "system",
+                        "Primary Update Source": "system",
+                        "Reopened After Terminal": False,
                         "Update Event Time": "2026-03-20 10:00:00",
                         "Days To RTN Update": 12.0,
                     }
@@ -116,20 +118,25 @@ class TestOverallSummaryIntent(unittest.TestCase):
 
         self.assertIsNone(rows)
         self.assertIn("Open exposure: **$300.00** across **2** record(s)", text)
-        self.assertIn("Unique credited records in period: **$150.00** across **1** record(s)", text)
-        self.assertIn("RTN update events captured: **1** event(s) / **$150.00**", text)
-        self.assertIn("System-updated RTN events: **1** event(s) / **$150.00**", text)
-        self.assertIn("Manual RTN-provided events: **0** event(s) / **$0.00**", text)
-        self.assertIn("Records with both system and manual RTN activity: **0**", text)
+        self.assertIn("What was credited in period: **$150.00** across **1** unique record(s)", text)
+        self.assertIn("Primary attribution: **system-led 1 / $150.00**, **manual-led 0 / $0.00**", text)
+        self.assertIn("Avg days from entry to RTN assignment: **12.0**", text)
+        self.assertIn("Reopened after terminal: **0** record(s)", text)
         self.assertIn("Billing queue delay: **1** record(s) / **$100.00**", text)
         self.assertIn("Stale investigation: **1** record(s) / **$200.00**", text)
         self.assertIn("**JHC11** — $250.00", text)
         self.assertIn("**1001** — $250.00", text)
         self.assertIn("**Price Discrepancy** — **2** record(s) / $250.00", text)
         self.assertEqual(2, meta["overall_summary"]["open_record_count"])
-        self.assertEqual(150.0, meta["overall_summary"]["credited_in_period"]["credited_credit_total"])
-        self.assertEqual(1, meta["overall_summary"]["credited_in_period"]["credited_event_count"])
-        self.assertEqual(0, meta["overall_summary"]["credited_in_period"]["records_with_both_sources"])
+        credited = meta["overall_summary"]["credited_in_period"]
+        self.assertEqual(150.0, credited["credited_credit_total"])
+        self.assertEqual(1, credited["credited_event_count"])
+        self.assertEqual(0, credited["records_with_both_sources"])
+        self.assertEqual(1, credited["primary_system_record_count"])
+        self.assertEqual(150.0, credited["primary_system_credit_total"])
+        self.assertEqual(0, credited["primary_manual_record_count"])
+        self.assertEqual(0.0, credited["primary_manual_credit_total"])
+        self.assertEqual(0, credited["reopened_after_terminal_count"])
         self.assertEqual(
             {
                 "id": "credit_ops_snapshot",
@@ -193,6 +200,8 @@ class TestOverallSummaryIntent(unittest.TestCase):
                         "RTN_CR_No": "CR-10",
                         "Credit Request Total": 125.0,
                         "Update Source": "system",
+                        "Primary Update Source": "system",
+                        "Reopened After Terminal": False,
                         "Update Event Time": "2026-03-18 10:00:00",
                         "Days To RTN Update": 13.0,
                     },
@@ -204,6 +213,8 @@ class TestOverallSummaryIntent(unittest.TestCase):
                         "RTN_CR_No": "CR-10",
                         "Credit Request Total": 125.0,
                         "Update Source": "manual",
+                        "Primary Update Source": "system",
+                        "Reopened After Terminal": False,
                         "Update Event Time": "2026-03-20 10:00:00",
                         "Days To RTN Update": 15.0,
                     },
@@ -248,17 +259,21 @@ class TestOverallSummaryIntent(unittest.TestCase):
                 text, rows, meta = intent_overall_summary("give me a credit overview this month", df)
 
         self.assertIsNone(rows)
-        self.assertIn("Unique credited records in period: **$125.00** across **1** record(s)", text)
-        self.assertIn("RTN update events captured: **2** event(s) / **$250.00**", text)
-        self.assertIn("System-updated RTN events: **1** event(s) / **$125.00**", text)
-        self.assertIn("Manual RTN-provided events: **1** event(s) / **$125.00**", text)
-        self.assertIn("Records with both system and manual RTN activity: **1**", text)
+        self.assertIn("What was credited in period: **$125.00** across **1** unique record(s)", text)
+        self.assertIn("Primary attribution: **system-led 1 / $125.00**, **manual-led 0 / $0.00**", text)
+        self.assertIn("Avg days from entry to RTN assignment: **13.0**", text)
+        self.assertIn("Reopened after terminal: **0** record(s)", text)
         credited = meta["overall_summary"]["credited_in_period"]
         self.assertEqual(1, credited["credited_record_count"])
         self.assertEqual(125.0, credited["credited_credit_total"])
         self.assertEqual(2, credited["credited_event_count"])
         self.assertEqual(250.0, credited["credited_event_credit_total"])
         self.assertEqual(1, credited["records_with_both_sources"])
+        self.assertEqual(1, credited["primary_system_record_count"])
+        self.assertEqual(125.0, credited["primary_system_credit_total"])
+        self.assertEqual(0, credited["primary_manual_record_count"])
+        self.assertEqual(0.0, credited["primary_manual_credit_total"])
+        self.assertEqual(0, credited["reopened_after_terminal_count"])
 
 
 if __name__ == "__main__":

@@ -234,11 +234,16 @@ def _credited_in_period_metrics(
         "credited_credit_total": 0.0,
         "credited_event_count": 0,
         "credited_event_credit_total": 0.0,
+        "primary_system_record_count": 0,
+        "primary_system_credit_total": 0.0,
+        "primary_manual_record_count": 0,
+        "primary_manual_credit_total": 0.0,
         "system_record_count": 0,
         "system_credit_total": 0.0,
         "manual_record_count": 0,
         "manual_credit_total": 0.0,
         "records_with_both_sources": 0,
+        "reopened_after_terminal_count": 0,
         "avg_days_to_rtn_assignment": 0.0,
         "largest_system_batch_count": 0,
         "largest_system_batch_date": "N/A",
@@ -266,6 +271,8 @@ def _credited_in_period_metrics(
     events["Credit Request Total"] = pd.to_numeric(events.get("Credit Request Total"), errors="coerce").fillna(0.0)
     events["Days To RTN Update"] = pd.to_numeric(events.get("Days To RTN Update"), errors="coerce")
     events["Update Source"] = events.get("Update Source", pd.Series(index=events.index, dtype="object")).fillna("").astype(str)
+    events["Primary Update Source"] = events.get("Primary Update Source", pd.Series(index=events.index, dtype="object")).fillna("").astype(str)
+    events["Reopened After Terminal"] = events.get("Reopened After Terminal", pd.Series(index=events.index, dtype="object")).fillna(False).astype(bool)
 
     dedupe_subset = [
         column
@@ -278,6 +285,15 @@ def _credited_in_period_metrics(
         ]
         if column in events.columns
     ]
+    record_key = (
+        events[dedupe_subset].apply(
+            lambda row: "||".join("" if pd.isna(value) else str(value) for value in row),
+            axis=1,
+        )
+        if dedupe_subset
+        else pd.Series(events.index.astype(str), index=events.index, dtype="object")
+    )
+    events["_Record_Key"] = record_key
     if dedupe_subset:
         latest = (
             events.sort_values("Update Event Time", ascending=True)
@@ -290,23 +306,45 @@ def _credited_in_period_metrics(
     valid_days = pd.to_numeric(events["Days To RTN Update"], errors="coerce").dropna()
     records_with_both_sources = 0
     if dedupe_subset:
-        source_counts = (
-            events.groupby(dedupe_subset, dropna=False)["Update Source"]
-            .nunique()
-        )
+        source_counts = events.groupby("_Record_Key", dropna=False)["Update Source"].nunique()
         records_with_both_sources = int((source_counts > 1).sum())
+
+    grouped = events.sort_values("Update Event Time", ascending=True).groupby("_Record_Key", dropna=False)
+
+    def _primary_row(group: pd.DataFrame) -> pd.Series:
+        primary_source = str(group["Primary Update Source"].iloc[-1] or "").strip().lower()
+        preferred = group[group["Update Source"].astype(str).str.strip().str.lower().eq(primary_source)].copy()
+        if preferred.empty:
+            preferred = group.copy()
+        return preferred.sort_values("Update Event Time", ascending=True).iloc[0]
+
+    primary_rows = grouped.apply(_primary_row).reset_index(drop=True) if not events.empty else pd.DataFrame()
+    primary_rows["Credit Request Total"] = pd.to_numeric(primary_rows.get("Credit Request Total"), errors="coerce").fillna(0.0)
+    primary_rows["Days To RTN Update"] = pd.to_numeric(primary_rows.get("Days To RTN Update"), errors="coerce")
+    primary_rows["Primary Update Source"] = primary_rows.get("Primary Update Source", pd.Series(index=primary_rows.index, dtype="object")).fillna("").astype(str)
+    primary_rows["Reopened After Terminal"] = primary_rows.get("Reopened After Terminal", pd.Series(index=primary_rows.index, dtype="object")).fillna(False).astype(bool)
+
+    primary_system = primary_rows[primary_rows["Primary Update Source"].str.lower().eq("system")].copy()
+    primary_manual = primary_rows[primary_rows["Primary Update Source"].str.lower().eq("manual")].copy()
+    primary_days = pd.to_numeric(primary_rows["Days To RTN Update"], errors="coerce").dropna()
+    reopened_after_terminal_count = int(primary_rows["Reopened After Terminal"].fillna(False).astype(bool).sum()) if not primary_rows.empty else 0
 
     payload = {
         "credited_record_count": int(len(latest.index)),
         "credited_credit_total": float(latest["Credit Request Total"].sum()),
         "credited_event_count": int(summary.get("preview_total_records") or len(events.index)),
         "credited_event_credit_total": float(events["Credit Request Total"].sum()),
+        "primary_system_record_count": int(len(primary_system.index)),
+        "primary_system_credit_total": float(primary_system["Credit Request Total"].sum()),
+        "primary_manual_record_count": int(len(primary_manual.index)),
+        "primary_manual_credit_total": float(primary_manual["Credit Request Total"].sum()),
         "system_record_count": int(summary.get("total_records") or 0),
         "system_credit_total": float(summary.get("credit_total") or 0.0),
         "manual_record_count": int(summary.get("manual_record_count") or 0),
         "manual_credit_total": float(summary.get("manual_credit_total") or 0.0),
         "records_with_both_sources": records_with_both_sources,
-        "avg_days_to_rtn_assignment": float(valid_days.mean() or 0.0) if not valid_days.empty else 0.0,
+        "reopened_after_terminal_count": reopened_after_terminal_count,
+        "avg_days_to_rtn_assignment": float(primary_days.mean() or 0.0) if not primary_days.empty else 0.0,
         "largest_system_batch_count": int(summary.get("largest_batch_count") or 0),
         "largest_system_batch_date": str(summary.get("largest_batch_date") or "N/A"),
         "largest_system_batch_credit_total": float(summary.get("largest_batch_credit_total") or 0.0),
@@ -314,6 +352,8 @@ def _credited_in_period_metrics(
         "largest_manual_batch_date": str(summary.get("manual_largest_batch_date") or "N/A"),
         "largest_manual_batch_credit_total": float(summary.get("manual_largest_batch_credit_total") or 0.0),
     }
+    payload["credited_record_count"] = int(len(primary_rows.index))
+    payload["credited_credit_total"] = float(primary_rows["Credit Request Total"].sum()) if not primary_rows.empty else 0.0
     suggestions = meta.get("suggestions") if isinstance(meta.get("suggestions"), list) else []
     return payload, suggestions
 
@@ -385,22 +425,11 @@ def intent_overall_summary(query: str, df: pd.DataFrame):
         f"- Stale investigation: **{time_metrics['stale_investigation_count']}** record(s) / **{format_money(time_metrics['stale_investigation_total'])}**",
         "",
         "✅ **What Was Credited In Period**",
-        f"- Unique credited records in period: **{format_money(credited_metrics['credited_credit_total'])}** across **{credited_metrics['credited_record_count']}** record(s)",
-        f"- RTN update events captured: **{credited_metrics['credited_event_count']}** event(s) / **{format_money(credited_metrics['credited_event_credit_total'])}**",
-        f"- System-updated RTN events: **{credited_metrics['system_record_count']}** event(s) / **{format_money(credited_metrics['system_credit_total'])}**",
-        f"- Manual RTN-provided events: **{credited_metrics['manual_record_count']}** event(s) / **{format_money(credited_metrics['manual_credit_total'])}**",
-        f"- Records with both system and manual RTN activity: **{credited_metrics['records_with_both_sources']}**",
+        f"- What was credited in period: **{format_money(credited_metrics['credited_credit_total'])}** across **{credited_metrics['credited_record_count']}** unique record(s)",
+        f"- Primary attribution: **system-led {credited_metrics['primary_system_record_count']} / {format_money(credited_metrics['primary_system_credit_total'])}**, **manual-led {credited_metrics['primary_manual_record_count']} / {format_money(credited_metrics['primary_manual_credit_total'])}**",
         f"- Avg days from entry to RTN assignment: **{credited_metrics['avg_days_to_rtn_assignment']:.1f}**",
+        f"- Reopened after terminal: **{credited_metrics['reopened_after_terminal_count']}** record(s)",
     ]
-
-    if credited_metrics["largest_system_batch_count"] > 0:
-        message_lines.append(
-            f"- Largest system batch: **{credited_metrics['largest_system_batch_count']}** record(s) on **{credited_metrics['largest_system_batch_date']}** / **{format_money(credited_metrics['largest_system_batch_credit_total'])}**"
-        )
-    if credited_metrics["largest_manual_batch_count"] > 0:
-        message_lines.append(
-            f"- Largest manual batch: **{credited_metrics['largest_manual_batch_count']}** record(s) on **{credited_metrics['largest_manual_batch_date']}** / **{format_money(credited_metrics['largest_manual_batch_credit_total'])}**"
-        )
 
     if top_customers:
         message_lines.extend(["", "🏢 **Mix / Drivers**", "Top customers in scope:"])

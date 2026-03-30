@@ -1,6 +1,7 @@
 import re
 import pandas as pd
 
+from actus.intents.credit_ops_snapshot import _parse_window
 from actus.utils.df_cleaning import coerce_date
 from actus.utils.formatting import format_money
 
@@ -9,6 +10,15 @@ INTENT_ALIASES = [
     "trends in credits",
     "credit patterns",
 ]
+
+
+def _naive_day(value: pd.Timestamp | None) -> pd.Timestamp | None:
+    if value is None or pd.isna(value):
+        return None
+    ts = pd.Timestamp(value)
+    if ts.tzinfo is not None:
+        ts = ts.tz_localize(None)
+    return ts.normalize()
 
 
 def intent_credit_trends(query: str, df: pd.DataFrame):
@@ -51,28 +61,42 @@ def intent_credit_trends(query: str, df: pd.DataFrame):
     if dv.empty:
         return "I don't have enough dated records to analyze trends."
 
-    # Last 60 days split into 2 windows of 30.
-    # If the latest record is mid-month, align the previous window to the
-    # end of the prior month so the previous period represents a full month-end.
     latest = dv["Date"].max().normalize()
-    if latest.day != latest.days_in_month:
-        prev_end = (latest.replace(day=1) - pd.Timedelta(days=1)).normalize()
-        prev_start = prev_end - pd.Timedelta(days=30)
-        current_start = prev_end + pd.Timedelta(days=1)
-        current_end = latest
-    else:
-        current_end = latest
-        current_start = latest - pd.Timedelta(days=30)
+    start, end, raw_label = _parse_window(query)
+    start_ts = _naive_day(start)
+    end_ts = _naive_day(end)
+
+    if start_ts is not None:
+        current_start = start_ts
+        current_end = end_ts or latest
+        if current_end < current_start:
+            current_end = current_start
+        current_span = current_end - current_start
         prev_end = current_start - pd.Timedelta(days=1)
-        prev_start = prev_end - pd.Timedelta(days=30)
+        prev_start = prev_end - current_span
+        period = f"{raw_label or f'{current_start.date()} → {current_end.date()}'} vs previous matched window"
+    else:
+        # Default behavior: last 30 days vs previous 30 days.
+        # If the latest record is mid-month, align the previous window to the
+        # end of the prior month so the previous period represents a full month-end.
+        if latest.day != latest.days_in_month:
+            prev_end = (latest.replace(day=1) - pd.Timedelta(days=1)).normalize()
+            prev_start = prev_end - pd.Timedelta(days=30)
+            current_start = prev_end + pd.Timedelta(days=1)
+            current_end = latest
+        else:
+            current_end = latest
+            current_start = latest - pd.Timedelta(days=30)
+            prev_end = current_start - pd.Timedelta(days=1)
+            prev_start = prev_end - pd.Timedelta(days=30)
+        period = "Last 30 Days vs Previous 30 Days"
 
     last_30 = dv[dv["Date"].between(current_start, current_end)].copy()
     prev_30 = dv[dv["Date"].between(prev_start, prev_end)].copy()
 
     if last_30.empty or prev_30.empty:
         return (
-            "I don't have enough data in the last 60 days to compare "
-            "the last 30 days vs the previous 30."
+            "I don't have enough data in the requested comparison windows to analyze trends."
         )
 
     # Numeric credit total
@@ -130,9 +154,14 @@ def intent_credit_trends(query: str, df: pd.DataFrame):
     else:
         top_reps = pd.Series(dtype=float)
 
-    # ---------- Chart data (last 12 months) ----------
-    chart_start = (latest - pd.DateOffset(months=11)).replace(day=1)
-    chart_df = dv[dv["Date"].between(chart_start, latest)].copy()
+    # ---------- Chart data ----------
+    if start_ts is not None:
+        chart_start = current_start.replace(day=1)
+        chart_end = current_end
+    else:
+        chart_start = (latest - pd.DateOffset(months=11)).replace(day=1)
+        chart_end = latest
+    chart_df = dv[dv["Date"].between(chart_start, chart_end)].copy()
     if "RTN_CR_No" in chart_df.columns:
         cr = chart_df["RTN_CR_No"].astype(str).str.strip()
         chart_df["Has_CR"] = (
@@ -170,7 +199,6 @@ def intent_credit_trends(query: str, df: pd.DataFrame):
         for _, row in monthly.iterrows()
     ]
 
-    period = "Last 30 Days vs Previous 30 Days"
     credit_trends = {
         "period": period,
         "window": {
@@ -234,8 +262,8 @@ def intent_credit_trends(query: str, df: pd.DataFrame):
 
     message = (
         "Here is the **Credit Trends Analysis** for the requested period.\n\n"
-        f"- Previous 30 days: {prev_start.date()} → {prev_end.date()}\n"
-        f"- Last 30 days: {current_start.date()} → {current_end.date()}"
+        f"- Previous comparison window: {prev_start.date()} → {prev_end.date()}\n"
+        f"- Requested comparison window: {current_start.date()} → {current_end.date()}"
     )
 
     return message, None, {"creditTrends": credit_trends}

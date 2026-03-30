@@ -327,11 +327,12 @@ class TestAutoModeExecution(unittest.TestCase):
                         "credited_credit_total": 55677.11,
                         "credited_event_count": 355,
                         "credited_event_credit_total": 61220.11,
-                        "system_record_count": 290,
-                        "system_credit_total": 50220.11,
-                        "manual_record_count": 30,
-                        "manual_credit_total": 5457.00,
+                        "primary_system_record_count": 290,
+                        "primary_system_credit_total": 50220.11,
+                        "primary_manual_record_count": 30,
+                        "primary_manual_credit_total": 5457.00,
                         "records_with_both_sources": 35,
+                        "reopened_after_terminal_count": 8,
                         "avg_days_to_rtn_assignment": 14.6,
                     },
                     "top_customers": [{"label": "JHC11", "credit_total": 2217.50}],
@@ -350,9 +351,213 @@ class TestAutoModeExecution(unittest.TestCase):
         self.assertIn("billing queue delay", bullets[1])
         self.assertIn("$55,677.11", bullets[2])
         self.assertIn("14.6", bullets[2])
-        self.assertIn("JHC11", bullets[3])
-        self.assertIn("1005365", bullets[3])
-        self.assertIn("Price discrepancy", bullets[3])
+        self.assertIn("system-led 290 / $50,220.11", bullets[3])
+        self.assertIn("manual-led 30 / $5,457.00", bullets[3])
+        self.assertIn("reopened after terminal totals **8**", bullets[3].lower())
+
+    def test_portfolio_credit_brief_renders_sectioned_summary(self) -> None:
+        plan = auto_mode.AutoPlan(
+            family="portfolio",
+            primary_intent="overall_summary",
+            target_label=None,
+            intents=(
+                auto_mode.PlannedIntent("system_updates", "System updates with RTN", "system rtn updates"),
+                auto_mode.PlannedIntent("credit_root_causes", "Root causes", "root causes"),
+                auto_mode.PlannedIntent("overall_summary", "Credit overview", "credit overview"),
+            ),
+            suggestions=(),
+        )
+
+        runs = {
+            "system_updates": auto_mode.SpecialistRun(
+                plan=plan.intents[0],
+                text="system updates",
+                rows=None,
+                meta={
+                    "system_updates_summary": {
+                        "window": "2025-09-29 → 2026-03-29",
+                        "total_records": 594,
+                        "credit_total": 119033.58,
+                        "avg_days_to_system_credit": 59.9,
+                        "median_days_to_system_credit": 38.6,
+                        "outlier_count": 3,
+                        "outlier_ticket_ids": ["R-036446", "R-042604", "R-045605"],
+                        "batch_dates": 9,
+                        "batched_dates": 7,
+                        "batched_records": 592,
+                        "batched_credit_total": 118333.08,
+                        "largest_batch_count": 179,
+                        "largest_batch_date": "2026-02-02",
+                        "largest_batch_credit_total": 18027.36,
+                        "manual_record_count": 695,
+                        "manual_credit_total": 121219.75,
+                        "manual_avg_days_to_update": 123.8,
+                        "manual_outlier_count": 10,
+                        "manual_outlier_ticket_ids": ["R-038692", "R-039188", "R-041888", "R-038247", "R-036895"],
+                    },
+                    "suggestions": [
+                        {
+                            "id": "system_updates",
+                            "label": "System RTN updates preview (2025-09-29 → 2026-03-29)",
+                            "prefix": "system rtn updates analysis from 2025-09-29 to 2026-03-29",
+                        }
+                    ],
+                },
+            ),
+            "credit_root_causes": auto_mode.SpecialistRun(
+                plan=plan.intents[1],
+                text="root causes",
+                rows=None,
+                meta={
+                    "rootCauses": {
+                        "period": "2025-09-29 → 2026-03-29",
+                        "total": "$209,765.46",
+                        "data": [
+                            {"root_cause": "Item should be PPD", "credit_request_total": 79140.89, "record_count": 503},
+                            {"root_cause": "Item not price matched when subbing", "credit_request_total": 57646.81, "record_count": 307},
+                            {"root_cause": "Unspecified", "credit_request_total": 49917.77, "record_count": 165},
+                        ],
+                    }
+                },
+            ),
+            "overall_summary": auto_mode.SpecialistRun(
+                plan=plan.intents[2],
+                text="overall summary",
+                rows=None,
+                meta={
+                    "overall_summary": {
+                        "window": "2025-09-29 → 2026-03-29",
+                        "open_record_count": 594,
+                        "open_credit_total": 70381.28,
+                        "avg_days_open": 68.7,
+                        "avg_days_since_last_status": 52.9,
+                        "billing_queue_delay_count": 224,
+                        "billing_queue_delay_total": 37725.55,
+                        "stale_investigation_count": 38,
+                        "stale_investigation_total": 2572.62,
+                        "credited_in_period": {
+                            "credited_record_count": 1101,
+                            "credited_credit_total": 201046.75,
+                            "primary_system_record_count": 602,
+                            "primary_system_credit_total": 119301.25,
+                            "primary_manual_record_count": 499,
+                            "primary_manual_credit_total": 81745.50,
+                            "avg_days_to_rtn_assignment": 94.9,
+                            "reopened_after_terminal_count": 4,
+                        },
+                    },
+                    "suggestions": [
+                        {
+                            "id": "credit_ops_snapshot",
+                            "label": "Credit ops snapshot (2025-09-29 → 2026-03-29)",
+                            "prefix": "credit ops snapshot from 2025-09-29 to 2026-03-29",
+                        }
+                    ],
+                },
+            ),
+        }
+
+        def fake_execute(planned_intent: auto_mode.PlannedIntent, _df: pd.DataFrame):
+            return runs[planned_intent.id]
+
+        with patch("actus.auto_mode.plan_auto_mode", return_value=plan):
+            with patch("actus.auto_mode._execute_planned_intent", side_effect=fake_execute):
+                with patch("actus.auto_mode.openrouter_chat", side_effect=AssertionError("LLM should not run")):
+                    text, rows, meta = auto_mode.auto_mode_answer(
+                        "give me a credit overview with RTN updates and root causes for the last 6 months",
+                        pd.DataFrame(),
+                    )
+
+        self.assertIsNone(rows)
+        self.assertEqual("auto_mode", meta.get("intent_id"))
+        self.assertIn("## Executive Summary", text)
+        self.assertIn("Period: September 29, 2025 – March 29, 2026", text)
+        self.assertIn("### Section 1: Volume & Activity", text)
+        self.assertIn("1,101", text)
+        self.assertIn("$201,046.75", text)
+        self.assertIn("### Section 2: Time-to-Resolution", text)
+        self.assertIn("System outliers (3):\nR-036446, R-042604, R-045605", text)
+        self.assertIn("Manual outliers (10):\nR-038692, R-039188, R-041888, R-038247, R-036895", text)
+        self.assertIn("\n\nProcessing note:", text)
+        self.assertIn("### Section 3: Open Exposure", text)
+        self.assertIn("Reopened after terminal: **4** record(s).", text)
+        self.assertIn("### Section 4: Root Causes", text)
+        self.assertIn("Item should be PPD", text)
+        self.assertNotIn("## Key Findings By Specialist", text)
+
+    def test_overall_summary_auto_renders_four_section_brief(self) -> None:
+        plan = auto_mode.AutoPlan(
+            family="portfolio",
+            primary_intent="overall_summary",
+            target_label=None,
+            intents=(
+                auto_mode.PlannedIntent("overall_summary", "Credit overview", "credit overview"),
+            ),
+            suggestions=(),
+        )
+
+        run = auto_mode.SpecialistRun(
+            plan=plan.intents[0],
+            text="overall summary",
+            rows=None,
+            meta={
+                "overall_summary": {
+                    "window": "2026-02-26 → 2026-03-29",
+                    "open_record_count": 198,
+                    "open_credit_total": 19677.83,
+                    "avg_days_open": 8.7,
+                    "avg_days_since_last_status": 7.7,
+                    "billing_queue_delay_count": 34,
+                    "billing_queue_delay_total": 4150.24,
+                    "stale_investigation_count": 38,
+                    "stale_investigation_total": 2572.62,
+                    "credited_in_period": {
+                        "credited_record_count": 175,
+                        "credited_credit_total": 32309.15,
+                        "primary_system_record_count": 175,
+                        "primary_system_credit_total": 32309.15,
+                        "primary_manual_record_count": 0,
+                        "primary_manual_credit_total": 0.0,
+                        "avg_days_to_rtn_assignment": 26.2,
+                        "reopened_after_terminal_count": 2,
+                    },
+                },
+                "suggestions": [
+                    {
+                        "id": "credit_ops_snapshot",
+                        "label": "Credit ops snapshot (2026-02-26 → 2026-03-29)",
+                        "prefix": "credit ops snapshot from 2026-02-26 to 2026-03-29",
+                    }
+                ],
+            },
+        )
+
+        def fake_execute(_planned_intent: auto_mode.PlannedIntent, _df: pd.DataFrame):
+            return run
+
+        with patch("actus.auto_mode.plan_auto_mode", return_value=plan):
+            with patch("actus.auto_mode._execute_planned_intent", side_effect=fake_execute):
+                with patch("actus.auto_mode.openrouter_chat", side_effect=AssertionError("LLM should not run")):
+                    text, rows, meta = auto_mode.auto_mode_answer(
+                        "give me a credit overview for the last month",
+                        pd.DataFrame(),
+                    )
+
+        self.assertIsNone(rows)
+        self.assertEqual("auto_mode", meta.get("intent_id"))
+        self.assertIn("## Executive Summary", text)
+        self.assertIn("### Section 1: Period Activity", text)
+        self.assertIn("175** unique record(s) were credited totaling **$32,309.15**", text)
+        self.assertIn("198** record(s) remained open totaling **$19,677.83**", text)
+        self.assertIn("### Section 2: Time-to-Resolution", text)
+        self.assertIn("Average open age was **8.7** day(s), with **7.7** day(s) since the last update. Average time to RTN assignment was **26.2** day(s).", text)
+        self.assertIn("### Section 3: Open Exposure", text)
+        self.assertIn("Billing queue delay affects **34** record(s) totaling **$4,150.24**", text)
+        self.assertIn("stale investigation affects **38** record(s) totaling **$2,572.62**", text)
+        self.assertIn("Reopened after terminal totals **2** record(s).", text)
+        self.assertIn("### Section 4: Attribution", text)
+        self.assertIn("All credited activity in the period was system-led: **175** record(s) / **$32,309.15**; manual-led activity was **0** record(s) / **$0.00**.", text)
+        self.assertNotIn("## Key Findings By Specialist", text)
 
     def test_no_plan_falls_back_to_standard_router(self) -> None:
         with patch(

@@ -827,6 +827,49 @@ class TestAutoModeExecution(unittest.TestCase):
         self.assertIn("**Price discrepancy** follows at **95.6** day(s).", text)
         self.assertNotIn("Auto Mode ran **1/1** portfolio specialist", text)
 
+    def test_top_items_single_specialist_summary_names_item_drivers(self) -> None:
+        plan = auto_mode.AutoPlan(
+            family="portfolio",
+            primary_intent="top_items",
+            target_label=None,
+            intents=(
+                auto_mode.PlannedIntent("top_items", "Top items", "top items"),
+            ),
+            suggestions=(),
+        )
+
+        run = auto_mode.SpecialistRun(
+            plan=plan.intents[0],
+            text="top items",
+            rows=None,
+            meta={
+                "top_items_summary": {
+                    "scope": "open",
+                    "window": "2026-03-01 → 2026-03-30",
+                    "total_credit": 14623.49,
+                    "total_record_count": 170,
+                    "data": [
+                        {"label": "1005365", "record_count": 98, "credit_total": 4900.66},
+                        {"label": "1007986", "record_count": 2, "credit_total": 3085.00},
+                        {"label": "005-105395", "record_count": 1, "credit_total": 1980.00},
+                    ],
+                }
+            },
+        )
+
+        with patch("actus.auto_mode.plan_auto_mode", return_value=plan):
+            with patch("actus.auto_mode._execute_planned_intent", return_value=run):
+                text, _rows, _meta = auto_mode.auto_mode_answer(
+                    "which items are driving the most open exposure this month",
+                    pd.DataFrame(),
+                )
+
+        self.assertIn("In March 1, 2026 – March 30, 2026, **$14,623.49** remains open across **170** record(s).", text)
+        self.assertIn("The top driver was **1005365** at **$4,900.66** across **98** record(s).", text)
+        self.assertIn("It was followed by **1007986** at **$3,085.00**.", text)
+        self.assertIn("These two items account for", text)
+        self.assertNotIn("Auto Mode ran **1/1** portfolio specialist", text)
+
     def test_billing_queue_single_specialist_summary_names_hotspots(self) -> None:
         plan = auto_mode.AutoPlan(
             family="portfolio",

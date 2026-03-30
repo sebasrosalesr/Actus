@@ -1277,6 +1277,42 @@ def _single_specialist_portfolio_executive_summary(run: SpecialistRun) -> str | 
             second_sentence += f" It was followed by **{second.get('label') or 'N/A'}** at **{_format_money(second.get('credit_total'))}**."
         return " ".join([first_sentence, second_sentence, third_sentence])
 
+    if run.plan.id == "top_items":
+        payload = run.meta.get("top_items_summary")
+        if not isinstance(payload, dict):
+            return None
+        data = [item for item in (payload.get("data") or []) if isinstance(item, dict)]
+        if not data:
+            return None
+        window = _humanize_window_label(payload.get("window") or "") or str(payload.get("window") or "the selected period").strip()
+        scope = str(payload.get("scope") or "credited").strip()
+        total_credit = float(payload.get("total_credit") or 0.0)
+        total_records = int(payload.get("total_record_count") or 0)
+        lead = data[0]
+        second = data[1] if len(data) > 1 else None
+        top_two_total = float(lead.get("credit_total") or 0.0) + float(second.get("credit_total") or 0.0) if second else float(lead.get("credit_total") or 0.0)
+        concentration_pct = (top_two_total / total_credit * 100.0) if total_credit > 0 else 0.0
+        if scope == "open":
+            first_sentence = (
+                f"In {window}, **{_format_money(total_credit)}** remains open across **{_format_count(total_records)}** record(s)."
+            )
+            third_sentence = (
+                f"These {'two items' if second else 'item'} account for **{concentration_pct:.1f}%** of total open exposure."
+            )
+        else:
+            first_sentence = (
+                f"In {window}, **{_format_money(total_credit)}** was credited across **{_format_count(total_records)}** record(s)."
+            )
+            third_sentence = (
+                f"These {'two items' if second else 'item'} account for **{concentration_pct:.1f}%** of total credited volume."
+            )
+        second_sentence = (
+            f"The top driver was **{lead.get('label') or 'N/A'}** at **{_format_money(lead.get('credit_total'))}** across **{_format_count(lead.get('record_count'))}** record(s)."
+        )
+        if second is not None:
+            second_sentence += f" It was followed by **{second.get('label') or 'N/A'}** at **{_format_money(second.get('credit_total'))}**."
+        return " ".join([first_sentence, second_sentence, third_sentence])
+
     if run.plan.id == "root_cause_rtn_timing":
         payload = run.meta.get("root_cause_rtn_timing")
         if not isinstance(payload, dict):

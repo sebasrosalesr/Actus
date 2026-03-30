@@ -108,6 +108,40 @@ def _root_cause_summary(frame: pd.DataFrame, *, limit: int = 3) -> list[dict[str
     return out
 
 
+def _cached_root_cause_summary(frame: pd.DataFrame, *, limit: int = 3) -> list[dict[str, Any]]:
+    cache = frame.attrs.get("_actus_intent_cache") if isinstance(getattr(frame, "attrs", None), dict) else None
+    if not isinstance(cache, dict):
+        return []
+    for (intent_id, _query), cached_response in cache.items():
+        if intent_id != "credit_root_causes":
+            continue
+        if not isinstance(cached_response, tuple) or len(cached_response) != 3:
+            continue
+        _text, _rows, meta = cached_response
+        if not isinstance(meta, dict):
+            continue
+        payload = meta.get("rootCauses")
+        if not isinstance(payload, dict):
+            continue
+        data = payload.get("data")
+        if not isinstance(data, list):
+            continue
+        summary: list[dict[str, Any]] = []
+        for item in data[:limit]:
+            if not isinstance(item, dict):
+                continue
+            summary.append(
+                {
+                    "root_cause": str(item.get("root_cause") or "").strip(),
+                    "record_count": int(float(item.get("record_count") or 0)),
+                    "credit_total": float(item.get("credit_request_total") or 0.0),
+                }
+            )
+        if summary:
+            return summary
+    return []
+
+
 def _time_reasoning_metrics(open_df: pd.DataFrame) -> dict[str, Any]:
     if open_df.empty:
         return {
@@ -420,7 +454,7 @@ def intent_overall_summary(query: str, df: pd.DataFrame):
 
     top_customers = _top_amount_groups(scope, "Customer Number")
     top_items = _top_amount_groups(scope, "Item Number")
-    top_root_causes = _root_cause_summary(scope)
+    top_root_causes = _cached_root_cause_summary(dv) or _root_cause_summary(scope)
 
     message_lines = [
         "📊 **Credit Overview**",

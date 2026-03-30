@@ -369,6 +369,110 @@ class TestOverallSummaryIntent(unittest.TestCase):
         self.assertEqual(150.0, credited["credited_credit_total"])
         self.assertEqual(1, credited["primary_system_record_count"])
 
+    def test_credit_overview_reuses_cached_root_cause_summary(self) -> None:
+        df = pd.DataFrame(
+            [
+                {
+                    "Date": "2026-03-08",
+                    "Ticket Number": "R-3",
+                    "Invoice Number": "INV3",
+                    "Item Number": "1001",
+                    "Customer Number": "JHC11",
+                    "Credit Request Total": "150.00",
+                    "RTN_CR_No": "CR-9",
+                    "Status": "[2026-03-20 10:00:00] Credited",
+                }
+            ]
+        )
+
+        system_updates_meta = {
+            "show_table": True,
+            "suggestions": [],
+            "csv_rows": pd.DataFrame(
+                [
+                    {
+                        "Ticket Number": "R-3",
+                        "Invoice Number": "INV3",
+                        "Item Number": "1001",
+                        "Customer Number": "JHC11",
+                        "RTN_CR_No": "CR-9",
+                        "Credit Request Total": 150.0,
+                        "Update Source": "system",
+                        "Primary Update Source": "system",
+                        "Reopened After Terminal": False,
+                        "Update Event Time": "2026-03-20 10:00:00",
+                        "Days To RTN Update": 12.0,
+                    }
+                ]
+            ),
+            "system_updates_summary": {
+                "total_records": 1,
+                "credit_total": 150.0,
+                "avg_days_to_system_credit": 12.0,
+                "median_days_to_system_credit": 12.0,
+                "outlier_count": 0,
+                "outlier_ticket_ids": [],
+                "batch_dates": 1,
+                "batched_dates": 0,
+                "batched_records": 0,
+                "batched_credit_total": 0.0,
+                "largest_batch_count": 1,
+                "largest_batch_date": "2026-03-20",
+                "largest_batch_credit_total": 150.0,
+                "manual_record_count": 0,
+                "manual_credit_total": 0.0,
+                "manual_avg_days_to_update": 0.0,
+                "manual_median_days_to_update": 0.0,
+                "manual_outlier_count": 0,
+                "manual_outlier_ticket_ids": [],
+                "manual_batch_dates": 0,
+                "manual_batched_dates": 0,
+                "manual_batched_records": 0,
+                "manual_batched_credit_total": 0.0,
+                "manual_largest_batch_count": 0,
+                "manual_largest_batch_date": "N/A",
+                "manual_largest_batch_credit_total": 0.0,
+                "preview_total_records": 1,
+            },
+        }
+        cached_system_response = ("System RTN updates analysis", None, system_updates_meta)
+        cached_root_response = (
+            "",
+            None,
+            {
+                "rootCauses": {
+                    "period": "2026-03-01 → 2026-03-30",
+                    "total": "$150.00",
+                    "data": [
+                        {
+                            "root_cause": "Price Discrepancy",
+                            "credit_request_total": 150.0,
+                            "record_count": 1,
+                        }
+                    ],
+                }
+            },
+        )
+
+        df.attrs["_actus_intent_cache"] = {
+            ("system_updates", "system rtn updates analysis from 2026-03-01 to 2026-03-30"): cached_system_response,
+            ("credit_root_causes", "root causes for 2026-03-01 to 2026-03-30"): cached_root_response,
+        }
+
+        with patch(
+            "actus.intents.overall_summary._lookup_root_causes",
+            side_effect=AssertionError("should reuse cached root causes"),
+        ):
+            with patch(
+                "actus.intents.overall_summary.intent_system_updates",
+                side_effect=AssertionError("should reuse cached system updates"),
+            ):
+                text, rows, meta = intent_overall_summary("give me a credit overview this month", df)
+
+        self.assertIsNone(rows)
+        self.assertIn("**Price Discrepancy** — **1** record(s) / $150.00", text)
+        self.assertEqual("Price Discrepancy", meta["overall_summary"]["top_root_causes"][0]["root_cause"])
+
 
 if __name__ == "__main__":
     unittest.main()

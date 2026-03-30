@@ -869,6 +869,58 @@ class TestAutoModeExecution(unittest.TestCase):
         self.assertIn("Top item hotspot is **1007986** at **$10,496.40**.", text)
         self.assertNotIn("Auto Mode ran **1/1** portfolio specialist", text)
 
+    def test_system_updates_single_specialist_summary_explains_processing(self) -> None:
+        plan = auto_mode.AutoPlan(
+            family="portfolio",
+            primary_intent="system_updates",
+            target_label=None,
+            intents=(
+                auto_mode.PlannedIntent("system_updates", "System updates with RTN", "system rtn updates"),
+            ),
+            suggestions=(),
+        )
+
+        run = auto_mode.SpecialistRun(
+            plan=plan.intents[0],
+            text="system updates",
+            rows=None,
+            meta={
+                "system_updates_summary": {
+                    "window": "2025-09-30 → 2026-03-30",
+                    "total_records": 594,
+                    "credit_total": 119033.58,
+                    "avg_days_to_system_credit": 59.9,
+                    "median_days_to_system_credit": 38.6,
+                    "outlier_count": 3,
+                    "outlier_ticket_ids": ["R-036446", "R-042604", "R-045605"],
+                    "batch_dates": 9,
+                    "batched_dates": 7,
+                    "batched_records": 592,
+                    "batched_credit_total": 118333.08,
+                    "largest_batch_count": 179,
+                    "largest_batch_date": "2026-02-02",
+                    "largest_batch_credit_total": 18027.36,
+                    "manual_record_count": 702,
+                    "manual_credit_total": 121924.00,
+                    "manual_avg_days_to_update": 123.8,
+                    "manual_outlier_count": 10,
+                    "manual_outlier_ticket_ids": ["R-038692", "R-039188", "R-041888", "R-038247", "R-036895"],
+                }
+            },
+        )
+
+        with patch("actus.auto_mode.plan_auto_mode", return_value=plan):
+            with patch("actus.auto_mode._execute_planned_intent", return_value=run):
+                text, _rows, _meta = auto_mode.auto_mode_answer(
+                    "show me system RTN updates analysis for the last 6 months",
+                    pd.DataFrame(),
+                )
+
+        self.assertIn("In September 30, 2025 – March 30, 2026, **594** system-updated RTN/CR record(s) totaling **$119,033.58** were processed.", text)
+        self.assertIn("Median time to system credit was **38.6** day(s), and **9** batch update date(s) were recorded", text)
+        self.assertIn("Manual RTN-provided updates also covered **702** record(s) / **$121,924.00**, averaging **123.8** day(s) to RTN assignment.", text)
+        self.assertNotIn("Auto Mode ran **1/1** portfolio specialist", text)
+
     def test_overview_with_trends_renders_overview_led_brief(self) -> None:
         plan = auto_mode.AutoPlan(
             family="portfolio",

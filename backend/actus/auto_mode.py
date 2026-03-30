@@ -1216,6 +1216,31 @@ def _specialist_headline(run: SpecialistRun) -> str:
 
 
 def _single_specialist_portfolio_executive_summary(run: SpecialistRun) -> str | None:
+    if run.plan.id == "system_updates":
+        payload = run.meta.get("system_updates_summary")
+        if not isinstance(payload, dict):
+            return None
+        window = _humanize_window_label(payload.get("window") or "") or str(payload.get("window") or "the selected period").strip()
+        total_records = int(payload.get("total_records") or 0)
+        credit_total = float(payload.get("credit_total") or 0.0)
+        median_days = float(payload.get("median_days_to_system_credit") or 0.0)
+        batch_dates = int(payload.get("batch_dates") or 0)
+        largest_batch_count = int(payload.get("largest_batch_count") or 0)
+        largest_batch_date = str(payload.get("largest_batch_date") or "N/A").strip()
+        largest_batch_credit_total = float(payload.get("largest_batch_credit_total") or 0.0)
+        manual_count = int(payload.get("manual_record_count") or 0)
+        manual_credit_total = float(payload.get("manual_credit_total") or 0.0)
+        manual_avg_days = float(payload.get("manual_avg_days_to_update") or 0.0)
+        parts = [
+            f"In {window}, **{_format_count(total_records)}** system-updated RTN/CR record(s) totaling **{_format_money(credit_total)}** were processed.",
+            f"Median time to system credit was **{median_days:.1f}** day(s), and **{_format_count(batch_dates)}** batch update date(s) were recorded; the largest batch was **{_format_count(largest_batch_count)}** record(s) on **{largest_batch_date}** totaling **{_format_money(largest_batch_credit_total)}**.",
+        ]
+        if manual_count:
+            parts.append(
+                f"Manual RTN-provided updates also covered **{_format_count(manual_count)}** record(s) / **{_format_money(manual_credit_total)}**, averaging **{manual_avg_days:.1f}** day(s) to RTN assignment."
+            )
+        return " ".join(parts)
+
     if run.plan.id == "top_accounts":
         payload = run.meta.get("top_accounts_summary")
         if not isinstance(payload, dict):

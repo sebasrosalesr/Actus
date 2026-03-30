@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections import deque
+import copy
 import hashlib
 import json
 import math
@@ -210,6 +211,9 @@ APP.include_router(quality_router)
 
 DATA_TTL_SEC = 120
 _CACHE: Dict[str, Any] = {"df": None, "loaded_at": 0.0}
+ASK_CACHE_TTL_SEC = 90
+_ASK_CACHE: Dict[tuple[str, str, Any], Dict[str, Any]] = {}
+_ASK_CACHE_LOCK = threading.Lock()
 _RAG_REBUILD_STOP = threading.Event()
 _RAG_PRELOAD_LOCK = threading.Lock()
 _RAG_PRELOAD_STARTED = False
@@ -545,6 +549,56 @@ def _get_df() -> pd.DataFrame:
     return df_
 
 
+def _ask_cache_enabled() -> bool:
+    return _flag_enabled("ACTUS_ASK_CACHE_ENABLED", default=True)
+
+
+def _ask_cache_ttl_sec() -> int:
+    return _env_int("ACTUS_ASK_CACHE_TTL_SEC", ASK_CACHE_TTL_SEC)
+
+
+def _df_cache_token(df: pd.DataFrame) -> Any:
+    if _CACHE.get("df") is df and _CACHE.get("loaded_at"):
+        return round(float(_CACHE["loaded_at"]), 3)
+    return id(df)
+
+
+def _ask_cache_key(*, mode: str, query: str, df: pd.DataFrame) -> tuple[str, str, Any]:
+    return (str(mode or "manual"), str(query or "").strip().lower(), _df_cache_token(df))
+
+
+def _get_cached_ask_payload(*, mode: str, query: str, df: pd.DataFrame) -> Dict[str, Any] | None:
+    if not _ask_cache_enabled() or mode != "auto":
+        return None
+    key = _ask_cache_key(mode=mode, query=query, df=df)
+    now = time.monotonic()
+    ttl = float(_ask_cache_ttl_sec())
+    with _ASK_CACHE_LOCK:
+        expired = [
+            cache_key
+            for cache_key, item in _ASK_CACHE.items()
+            if (now - float(item.get("stored_at", 0.0))) >= ttl
+        ]
+        for cache_key in expired:
+            _ASK_CACHE.pop(cache_key, None)
+        cached = _ASK_CACHE.get(key)
+        if not isinstance(cached, dict):
+            return None
+        payload = cached.get("payload")
+        return copy.deepcopy(payload) if isinstance(payload, dict) else None
+
+
+def _store_cached_ask_payload(*, mode: str, query: str, df: pd.DataFrame, payload: Dict[str, Any]) -> None:
+    if not _ask_cache_enabled() or mode != "auto":
+        return
+    key = _ask_cache_key(mode=mode, query=query, df=df)
+    with _ASK_CACHE_LOCK:
+        _ASK_CACHE[key] = {
+            "stored_at": time.monotonic(),
+            "payload": copy.deepcopy(payload),
+        }
+
+
 def _get_rag_rebuild_interval_sec() -> int:
     raw = os.environ.get("ACTUS_RAG_REBUILD_SEC")
     if raw:
@@ -746,6 +800,16 @@ def ask(payload: AskRequest) -> Dict[str, Any]:
             provider="actus",
             error=str(exc),
         )
+    cached_payload = _get_cached_ask_payload(mode=mode, query=query, df=df)
+    if isinstance(cached_payload, dict):
+        return _ask_response(
+            query=query,
+            text=str(cached_payload.get("text") or ""),
+            rows=cached_payload.get("rows") if isinstance(cached_payload.get("rows"), list) else [],
+            meta=cached_payload.get("meta") if isinstance(cached_payload.get("meta"), dict) else {},
+            t0=t0,
+            provider="actus_cache",
+        )
     if mode == "auto":
         text, df_result, meta = auto_mode_answer(query, df)
     else:
@@ -797,7 +861,7 @@ def ask(payload: AskRequest) -> Dict[str, Any]:
             (t3 - t2) * 1000,
         )
     )
-    return _ask_response(
+    response_payload = _ask_response(
         query=query,
         text=text,
         rows=rows,
@@ -805,3 +869,5 @@ def ask(payload: AskRequest) -> Dict[str, Any]:
         t0=t0,
         provider=str(meta.get("provider", "actus")) if isinstance(meta, dict) else "actus",
     )
+    _store_cached_ask_payload(mode=mode, query=query, df=df, payload=response_payload)
+    return response_payload

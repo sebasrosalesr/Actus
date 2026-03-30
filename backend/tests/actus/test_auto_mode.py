@@ -100,6 +100,20 @@ class TestAutoModePlanner(unittest.TestCase):
         self.assertEqual("portfolio", plan.family)
         self.assertEqual(["root_cause_rtn_timing"], [item.id for item in plan.intents])
 
+    def test_overview_with_trends_keeps_overview_primary(self) -> None:
+        plan = auto_mode.plan_auto_mode(
+            "give me a credit overview for last 3 months then show trends"
+        )
+
+        self.assertIsNotNone(plan)
+        assert plan is not None
+        self.assertEqual("portfolio", plan.family)
+        self.assertEqual("overall_summary", plan.primary_intent)
+        self.assertEqual(
+            ["overall_summary", "credit_trends"],
+            [item.id for item in plan.intents],
+        )
+
 
 class TestAutoModeExecution(unittest.TestCase):
     def test_partial_failure_returns_successful_specialists(self) -> None:
@@ -557,6 +571,92 @@ class TestAutoModeExecution(unittest.TestCase):
         self.assertIn("Reopened after terminal totals **2** record(s).", text)
         self.assertIn("### Section 4: Attribution", text)
         self.assertIn("All credited activity in the period was system-led: **175** record(s) / **$32,309.15**; manual-led activity was **0** record(s) / **$0.00**.", text)
+        self.assertNotIn("## Key Findings By Specialist", text)
+
+    def test_overview_with_trends_renders_overview_led_brief(self) -> None:
+        plan = auto_mode.AutoPlan(
+            family="portfolio",
+            primary_intent="overall_summary",
+            target_label=None,
+            intents=(
+                auto_mode.PlannedIntent("overall_summary", "Credit overview", "credit overview"),
+                auto_mode.PlannedIntent("credit_trends", "Credit trends", "credit trends"),
+            ),
+            suggestions=(),
+        )
+
+        runs = {
+            "overall_summary": auto_mode.SpecialistRun(
+                plan=plan.intents[0],
+                text="overall summary",
+                rows=None,
+                meta={
+                    "overall_summary": {
+                        "window": "2025-12-30 → 2026-03-30",
+                        "open_record_count": 456,
+                        "open_credit_total": 37973.15,
+                        "avg_days_open": 43.8,
+                        "avg_days_since_last_status": 42.2,
+                        "billing_queue_delay_count": 135,
+                        "billing_queue_delay_total": 5857.61,
+                        "stale_investigation_count": 11,
+                        "stale_investigation_total": 1505.64,
+                        "credited_in_period": {
+                            "credited_record_count": 629,
+                            "credited_credit_total": 126604.55,
+                            "primary_system_record_count": 584,
+                            "primary_system_credit_total": 118426.96,
+                            "primary_manual_record_count": 45,
+                            "primary_manual_credit_total": 8177.59,
+                            "avg_days_to_rtn_assignment": 72.9,
+                            "reopened_after_terminal_count": 4,
+                        },
+                    },
+                    "suggestions": [],
+                },
+            ),
+            "credit_trends": auto_mode.SpecialistRun(
+                plan=plan.intents[1],
+                text="credit trends",
+                rows=None,
+                meta={
+                    "creditTrends": {
+                        "metrics": [
+                            {"label": "Volume (Rows)", "current": 702, "previous": 395, "change": 77.7, "isCurrency": False},
+                            {"label": "Total Credits", "current": 96197.84, "previous": 112582.18, "change": -14.6, "isCurrency": True},
+                            {"label": "Avg Credit", "current": 137.03, "previous": 285.02, "change": -51.9, "isCurrency": True},
+                        ],
+                        "window": {
+                            "previous": "2025-09-30 → 2025-12-29",
+                            "current": "2025-12-30 → 2026-03-30",
+                        },
+                    },
+                    "suggestions": [],
+                },
+            ),
+        }
+
+        def fake_execute(planned_intent: auto_mode.PlannedIntent, _df: pd.DataFrame):
+            return runs[planned_intent.id]
+
+        with patch("actus.auto_mode.plan_auto_mode", return_value=plan):
+            with patch("actus.auto_mode._execute_planned_intent", side_effect=fake_execute):
+                with patch("actus.auto_mode.openrouter_chat", side_effect=AssertionError("LLM should not run")):
+                    text, rows, meta = auto_mode.auto_mode_answer(
+                        "give me a credit overview for last 3 months then show trends",
+                        pd.DataFrame(),
+                    )
+
+        self.assertIsNone(rows)
+        self.assertEqual("auto_mode", meta.get("intent_id"))
+        self.assertEqual(
+            ["overall_summary", "credit_trends"],
+            [item["id"] for item in meta["auto_mode"]["executed_intents"]],
+        )
+        self.assertIn("### Section 1: Period Activity", text)
+        self.assertIn("### Section 5: Trends", text)
+        self.assertIn("**Volume (Rows)**: 702 vs 395 (+77.7%).", text)
+        self.assertIn("Comparison window: **2025-09-30 → 2025-12-29** against **2025-12-30 → 2026-03-30**.", text)
         self.assertNotIn("## Key Findings By Specialist", text)
 
     def test_no_plan_falls_back_to_standard_router(self) -> None:

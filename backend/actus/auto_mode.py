@@ -281,6 +281,10 @@ def _query_has_credit_scope(normalized: str) -> bool:
     return any(term in normalized for term in ("credit", "credits", "ticket", "tickets", "invoice", "invoices"))
 
 
+def _query_mentions_overview(normalized: str) -> bool:
+    return any(term in normalized for term in ("overview", "summary", "picture", "health", "status"))
+
+
 def _looks_like_portfolio_query(normalized: str) -> bool:
     if not _query_has_credit_scope(normalized):
         return False
@@ -389,10 +393,13 @@ def _build_portfolio_plan(query: str, normalized: str) -> AutoPlan | None:
         if _portfolio_intent_matches(intent_id, normalized):
             selected.append(intent_id)
     if not selected and _query_has_credit_scope(normalized):
-        if any(term in normalized for term in ("summary", "overview", "picture", "health", "status")):
+        if _query_mentions_overview(normalized):
             selected.append("overall_summary")
     if not selected:
         return None
+
+    if "overall_summary" in selected and _query_mentions_overview(normalized):
+        selected = ["overall_summary", *[intent_id for intent_id in selected if intent_id != "overall_summary"]]
 
     selected = selected[:3]
     plans = tuple(_plan_intent(intent_id, _build_portfolio_query(intent_id, query)) for intent_id in selected)
@@ -1361,6 +1368,119 @@ def _render_overall_summary_brief(
     return "\n".join(lines).strip()
 
 
+def _render_overview_trends_brief(
+    *,
+    plan: AutoPlan,
+    successful_runs: list[SpecialistRun],
+    failed_runs: list[PlannedIntent],
+    suggestions: list[dict[str, str]],
+) -> str | None:
+    if plan.family != AUTO_FAMILY_PORTFOLIO:
+        return None
+    ids = [run.plan.id for run in successful_runs]
+    if set(ids) != {"overall_summary", "credit_trends"} or len(ids) != 2:
+        return None
+
+    run_by_id = {run.plan.id: run for run in successful_runs}
+    overview_payload = run_by_id["overall_summary"].meta.get("overall_summary")
+    trend_payload = run_by_id["credit_trends"].meta.get("creditTrends")
+    if not isinstance(overview_payload, dict) or not isinstance(trend_payload, dict):
+        return None
+
+    credited = overview_payload.get("credited_in_period")
+    if not isinstance(credited, dict):
+        credited = {}
+
+    window = str(overview_payload.get("window") or "the selected period").strip()
+    human_window = _humanize_window_label(window) or window
+
+    manual_count = _format_count(credited.get("primary_manual_record_count"))
+    manual_total = _format_money(credited.get("primary_manual_credit_total"))
+    system_count = _format_count(credited.get("primary_system_record_count"))
+    system_total = _format_money(credited.get("primary_system_credit_total"))
+
+    if float(credited.get("primary_manual_credit_total") or 0.0) == 0.0:
+        attribution_line = (
+            f"All credited activity in the period was system-led: **{system_count}** record(s) / **{system_total}**; "
+            f"manual-led activity was **{manual_count}** record(s) / **{manual_total}**."
+        )
+    else:
+        attribution_line = (
+            f"Primary attribution was system-led **{system_count}** record(s) / **{system_total}** and "
+            f"manual-led **{manual_count}** record(s) / **{manual_total}**."
+        )
+
+    lines = [
+        "## Executive Summary",
+        "",
+        "### Section 1: Period Activity",
+        (
+            f"In {human_window}, **{_format_count(credited.get('credited_record_count'))}** unique record(s) were credited totaling "
+            f"**{_format_money(credited.get('credited_credit_total'))}**. During the same period, "
+            f"**{_format_count(overview_payload.get('open_record_count'))}** record(s) remained open totaling "
+            f"**{_format_money(overview_payload.get('open_credit_total'))}**."
+        ),
+        "",
+        "### Section 2: Time-to-Resolution",
+        (
+            f"Average open age was **{float(overview_payload.get('avg_days_open') or 0.0):.1f}** day(s), with "
+            f"**{float(overview_payload.get('avg_days_since_last_status') or 0.0):.1f}** day(s) since the last update. "
+            f"Average time to RTN assignment was **{float(credited.get('avg_days_to_rtn_assignment') or 0.0):.1f}** day(s)."
+        ),
+        "",
+        "### Section 3: Open Exposure",
+        (
+            f"Open exposure totaled **{_format_money(overview_payload.get('open_credit_total'))}** across "
+            f"**{_format_count(overview_payload.get('open_record_count'))}** record(s). "
+            f"Billing queue delay affects **{_format_count(overview_payload.get('billing_queue_delay_count'))}** record(s) totaling "
+            f"**{_format_money(overview_payload.get('billing_queue_delay_total'))}**, and stale investigation affects "
+            f"**{_format_count(overview_payload.get('stale_investigation_count'))}** record(s) totaling "
+            f"**{_format_money(overview_payload.get('stale_investigation_total'))}**."
+        ),
+        f"Reopened after terminal totals **{_format_count(credited.get('reopened_after_terminal_count'))}** record(s).",
+        "",
+        "### Section 4: Attribution",
+        attribution_line,
+        "",
+        "### Section 5: Trends",
+    ]
+
+    metrics = trend_payload.get("metrics")
+    if isinstance(metrics, list):
+        for metric in metrics[:3]:
+            if not isinstance(metric, dict):
+                continue
+            current = metric.get("current")
+            previous = metric.get("previous")
+            change = metric.get("change")
+            is_currency = bool(metric.get("isCurrency"))
+            current_text = _format_money(current) if is_currency else str(current)
+            previous_text = _format_money(previous) if is_currency else str(previous)
+            lines.append(
+                f"- **{metric.get('label') or 'Metric'}**: {current_text} vs {previous_text} ({float(change or 0):+.1f}%)."
+            )
+
+    trend_window = trend_payload.get("window")
+    if isinstance(trend_window, dict) and trend_window.get("current") and trend_window.get("previous"):
+        lines.append(
+            f"- Comparison window: **{trend_window.get('previous')}** against **{trend_window.get('current')}**."
+        )
+
+    if failed_runs:
+        lines.extend(["", "### Execution Status"])
+        for item in failed_runs:
+            lines.append(f"- {item.label} did not complete during this Auto run.")
+
+    lines.extend(["", "## Recommended Follow-Ups"])
+    follow_up_lines = _render_follow_up_links(suggestions)
+    if follow_up_lines:
+        lines.extend(follow_up_lines)
+    else:
+        lines.append("- No additional follow-ups were suggested for this request.")
+
+    return "\n".join(lines).strip()
+
+
 def _deterministic_auto_answer(
     *,
     query: str,
@@ -1527,6 +1647,13 @@ def auto_mode_answer(query: str, df: pd.DataFrame) -> tuple[str, pd.DataFrame | 
     )
     if text is None:
         text = _render_overall_summary_brief(
+            plan=plan,
+            successful_runs=successful_runs,
+            failed_runs=failed_runs,
+            suggestions=suggestions,
+        )
+    if text is None:
+        text = _render_overview_trends_brief(
             plan=plan,
             successful_runs=successful_runs,
             failed_runs=failed_runs,

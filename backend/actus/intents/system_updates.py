@@ -21,7 +21,7 @@ TIMESTAMP_RE = re.compile(
 )
 
 _MANUAL_RTN_PATTERNS = (
-    r"\bcredit number provided\b",
+    r"\bcredit numbers? provided\b",
     r"\bcredit numbers? sent(?:\s+out)?\b",
     r"\bcredit number sent\b",
     r"\bcredited manually\b",
@@ -507,7 +507,31 @@ def intent_system_updates(query: str, df: pd.DataFrame):
     manual_rows["Primary Update Source"] = manual_rows["Primary_Update_Source"]
     manual_rows["Reopened After Terminal"] = manual_rows["Reopened_After_Terminal"]
 
-    filtered = pd.concat([system_rows, manual_rows], ignore_index=True, sort=False)
+    covered_idx = set(system_rows.index) | set(manual_rows.index)
+    fallback_mask = rtn_mask & ~df_use.index.isin(covered_idx)
+    fallback_rows = df_use[fallback_mask].copy()
+    if not fallback_rows.empty:
+        fallback_time = fallback_rows["Last_Status_Time"].where(
+            fallback_rows["Last_Status_Time"].notna(),
+            other=pd.to_datetime(fallback_rows.get("Date"), errors="coerce"),
+        )
+        fallback_rows = fallback_rows[fallback_time.notna()].copy()
+        if not fallback_rows.empty:
+            fallback_time = fallback_time[fallback_rows.index]
+            fallback_rows["Update Source"] = "unknown"
+            fallback_rows["Update Event Time"] = fallback_time
+            fallback_rows["Update Event Message"] = fallback_rows["Last_Status_Message"].fillna("")
+            fallback_rows["Update Event Type"] = ""
+            fallback_rows["Mentioned Resolved Date"] = None
+            fallback_rows["Mentioned Closed Date"] = None
+            fallback_rows["Primary Update Source"] = fallback_rows["Primary_Update_Source"]
+            fallback_rows["Reopened After Terminal"] = fallback_rows["Reopened_After_Terminal"]
+
+    filtered = pd.concat(
+        [system_rows, manual_rows, fallback_rows if not fallback_rows.empty else pd.DataFrame()],
+        ignore_index=True,
+        sort=False,
+    )
     if not filtered.empty:
         dedupe_subset = [
             column
@@ -563,6 +587,7 @@ def intent_system_updates(query: str, df: pd.DataFrame):
 
     system_summary = _source_summary(filtered, "system")
     manual_summary = _source_summary(filtered, "manual")
+    unknown_count = int((filtered.get("Update Source", pd.Series(dtype="object")) == "unknown").sum())
 
     if isinstance(system_summary.get("rows"), pd.DataFrame) and not system_summary["rows"].empty:
         filtered.loc[system_summary["rows"].index, "Batch Update Count"] = system_summary["rows"]["Batch Update Count"]
@@ -573,8 +598,12 @@ def intent_system_updates(query: str, df: pd.DataFrame):
         filtered.loc[manual_summary["rows"].index, "Batch Credit Total"] = manual_summary["rows"]["Batch Credit Total"]
         filtered.loc[manual_summary["rows"].index, "RTN Update Outlier"] = manual_summary["rows"]["RTN Update Outlier"]
 
-    filtered["Batch Update Count"] = pd.to_numeric(filtered.get("Batch Update Count"), errors="coerce").fillna(1).astype(int)
-    filtered["Batch Credit Total"] = pd.to_numeric(filtered.get("Batch Credit Total"), errors="coerce").fillna(filtered["Credit Request Total"]).astype(float)
+    if "Batch Update Count" not in filtered.columns:
+        filtered["Batch Update Count"] = 1
+    if "Batch Credit Total" not in filtered.columns:
+        filtered["Batch Credit Total"] = filtered["Credit Request Total"]
+    filtered["Batch Update Count"] = pd.to_numeric(filtered["Batch Update Count"], errors="coerce").fillna(1).astype(int)
+    filtered["Batch Credit Total"] = pd.to_numeric(filtered["Batch Credit Total"], errors="coerce").fillna(filtered["Credit Request Total"]).astype(float)
     filtered["RTN Update Outlier"] = filtered["RTN Update Outlier"].fillna(False).astype(bool)
     filtered["Days To System Credit"] = filtered["Days To RTN Update"]
     filtered["System Update Outlier"] = filtered["RTN Update Outlier"]
@@ -635,6 +664,13 @@ def intent_system_updates(query: str, df: pd.DataFrame):
             f"({', '.join(system_summary['outlier_ticket_ids'])})"
         )
 
+    unknown_lines: list[str] = []
+    if unknown_count > 0:
+        unknown_lines = [
+            "",
+            f"RTN/CR records with no parseable status event (using last status timestamp as event time): **{unknown_count}**",
+        ]
+
     manual_lines: list[str] = []
     if manual_summary["record_count"] > 0:
         manual_outlier_line = "- Manual outlier tickets: **0**"
@@ -665,6 +701,7 @@ def intent_system_updates(query: str, df: pd.DataFrame):
             f"- Batch update dates: **{system_summary['batch_dates']}** total, **{system_summary['batched_dates']}** with multi-record batches affecting **{system_summary['batched_records']}** record(s) / **{format_money(system_summary['batched_credit_total'])}**",
             f"- Largest batch: **{system_summary['largest_batch_count']}** record(s) on **{system_summary['largest_batch_date']}** / **{format_money(system_summary['largest_batch_credit_total'])}**",
             *manual_lines,
+            *unknown_lines,
             "",
             "Here is a preview of the results.",
         ]
@@ -708,6 +745,7 @@ def intent_system_updates(query: str, df: pd.DataFrame):
                 "manual_largest_batch_count": manual_summary["largest_batch_count"],
                 "manual_largest_batch_date": manual_summary["largest_batch_date"],
                 "manual_largest_batch_credit_total": manual_summary["largest_batch_credit_total"],
+                "unknown_record_count": unknown_count,
                 "preview_total_records": int(len(filtered)),
             },
         },

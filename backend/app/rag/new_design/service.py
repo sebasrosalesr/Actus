@@ -193,7 +193,7 @@ class ActusHybridRAGService:
     def _load_catalog_from_snapshot(self) -> list[RetrievalChunk] | None:
         try:
             canonical_tickets = load_canonical_ticket_models()
-        except FileNotFoundError:
+        except Exception:
             return None
         return build_retrieval_chunks(canonical_tickets)
 
@@ -221,7 +221,12 @@ class ActusHybridRAGService:
         if not has_catalog:
             chunks = self._load_catalog_from_snapshot()
             if chunks is None:
-                chunks = self._load_catalog_from_sqlite()
+                try:
+                    chunks = self._load_catalog_from_sqlite()
+                except Exception:
+                    self._refresh_catalog_from_firebase()
+                    with self._lock:
+                        return
             with self._lock:
                 self._catalog_chunks = chunks
                 self._chunk_by_id = {chunk.chunk_id: chunk for chunk in chunks}
@@ -232,14 +237,14 @@ class ActusHybridRAGService:
             has_store = self._store is not None
         if not has_store:
             self._get_store()
+        if self._catalog_is_clearly_stale():
+            self._refresh_catalog_from_firebase()
 
     def _load_canonical_snapshot(self) -> dict[str, Any] | None:
         try:
             return load_canonical_ticket_models()
-        except FileNotFoundError:
-            return None
         except Exception:
-            raise
+            return None
 
     def _hydrate_artifacts_from_snapshot(self) -> bool:
         canonical_tickets = self._load_canonical_snapshot()
@@ -326,6 +331,33 @@ class ActusHybridRAGService:
         investigation_rows = load_investigation_notes()
         return self.load_from_rows(credit_rows, investigation_rows)
 
+    def _refresh_catalog_from_firebase(self) -> dict[str, Any]:
+        load_env()
+        credit_rows = load_credit_requests()
+        investigation_rows = load_investigation_notes()
+        artifacts = build_pipeline_artifacts(
+            credit_rows=credit_rows,
+            investigation_rows=investigation_rows,
+            rules_path=self.config.rules_path,
+            fallback_max_chars=self.config.fallback_max_chars,
+        )
+        snapshot_path = save_canonical_tickets(artifacts.canonical_tickets)
+
+        with self._lock:
+            self._artifacts = PipelineArtifacts(
+                ticket_line_map=artifacts.ticket_line_map,
+                canonical_tickets=artifacts.canonical_tickets,
+                chunks=artifacts.chunks,
+            )
+            self._catalog_chunks = list(artifacts.chunks)
+            self._chunk_by_id = {chunk.chunk_id: chunk for chunk in artifacts.chunks}
+
+        return {
+            "ticket_count": len(artifacts.canonical_tickets),
+            "chunk_count": len(artifacts.chunks),
+            "snapshot_path": str(snapshot_path),
+        }
+
     def _refresh_canonical_only_from_firebase(self) -> dict[str, Any]:
         load_env()
         credit_rows = load_credit_requests()
@@ -353,6 +385,24 @@ class ActusHybridRAGService:
             "ticket_count": len(artifacts.canonical_tickets),
             "snapshot_path": str(snapshot_path),
         }
+
+    def _catalog_is_clearly_stale(self) -> bool:
+        with self._lock:
+            chunk_count = len(self._catalog_chunks or [])
+
+        if chunk_count <= 0:
+            return False
+
+        try:
+            stats = self._get_store().stats()
+        except Exception:
+            return False
+
+        vector_count = int((stats or {}).get("vector_count") or 0)
+        if vector_count <= 0:
+            return False
+
+        return abs(vector_count - chunk_count) > 10
 
     def _ensure_canonical_ready(self) -> None:
         with self._lock:
@@ -452,6 +502,17 @@ class ActusHybridRAGService:
             score_map = {chunk_id: float(score) for chunk_id, score in matches}
             allowed_ids = {chunk.chunk_id for _, chunk in candidates} if candidates else set(chunk_by_id)
             selected_ids = [chunk_id for chunk_id, _score in matches if chunk_id in allowed_ids]
+
+            if not selected_ids and matches:
+                self._refresh_catalog_from_firebase()
+                with self._lock:
+                    chunks = list(self._catalog_chunks or [])
+                    chunk_by_id = dict(self._chunk_by_id)
+                candidates, exact_not_found = route_candidate_chunks(query_info, chunks)
+                if exact_not_found:
+                    return {"results": [], "query_info": query_info, "not_found": True, "intent": query_info.intent}
+                allowed_ids = {chunk.chunk_id for _, chunk in candidates} if candidates else set(chunk_by_id)
+                selected_ids = [chunk_id for chunk_id, _score in matches if chunk_id in allowed_ids]
 
             self._load_missing_chunks(selected_ids)
             with self._lock:

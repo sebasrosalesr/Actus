@@ -1105,15 +1105,49 @@ def _overall_summary_bullets(meta: dict[str, Any], text: str) -> list[str]:
 def _system_updates_bullets(meta: dict[str, Any], text: str) -> list[str]:
     payload = meta.get("system_updates_summary")
     if isinstance(payload, dict):
+        system_count = int(payload.get("total_records") or 0)
+        manual_count = int(payload.get("manual_record_count") or 0)
+        unknown_count = int(payload.get("unknown_record_count") or 0)
+
+        # When system == 0 but manual > 0, lead with manual data
+        if system_count == 0 and manual_count > 0:
+            bullets: list[str] = [
+                f"In **{payload.get('window') or 'the selected window'}**, all RTN/CR activity was manually assigned: **{manual_count}** record(s) totaling **{_format_money(payload.get('manual_credit_total'))}** with an average of **{float(payload.get('manual_avg_days_to_update') or 0.0):.1f}** day(s) from entry to RTN assignment.",
+            ]
+            manual_median = float(payload.get("manual_median_days_to_update") or 0.0)
+            bullets.append(
+                f"Median time to manual RTN assignment is **{manual_median:.1f}** day(s)."
+            )
+            manual_outlier_ids = payload.get("manual_outlier_ticket_ids") or []
+            manual_outlier_count = int(payload.get("manual_outlier_count") or 0)
+            manual_suffix = f" ({', '.join(manual_outlier_ids)})" if manual_outlier_ids else ""
+            if manual_outlier_count:
+                bullets.append(
+                    f"Manual outlier tickets total **{manual_outlier_count}**{manual_suffix}."
+                )
+            bullets.append(
+                f"Manual multi-record batches affected **{int(payload.get('manual_batched_records') or 0)}** record(s) / **{_format_money(payload.get('manual_batched_credit_total'))}**; largest manual batch was **{int(payload.get('manual_largest_batch_count') or 0)}** record(s) on **{payload.get('manual_largest_batch_date') or 'N/A'}** totaling **{_format_money(payload.get('manual_largest_batch_credit_total'))}**."
+            )
+            bullets.extend(
+                [
+                    "No system-updated RTN/CR records were found in this window.",
+                ]
+            )
+            if unknown_count:
+                bullets.append(
+                    f"**{unknown_count}** RTN/CR record(s) were found with a credit number but no parseable system or manual status event; they appear in the table using the last recorded status timestamp."
+                )
+            return bullets[:4]
+
+        # Standard path: system > 0
         outlier_ids = payload.get("outlier_ticket_ids") or []
         outlier_count = int(payload.get("outlier_count") or 0)
         outlier_suffix = f" ({', '.join(outlier_ids)})" if outlier_ids else ""
-        bullets: list[str] = [
-            f"In **{payload.get('window') or 'the selected window'}**, there were **{int(payload.get('total_records') or 0)}** system-updated RTN/CR record(s) totaling **{_format_money(payload.get('credit_total'))}** with an average of **{float(payload.get('avg_days_to_system_credit') or 0.0):.1f}** day(s) from entry to system credit.",
+        bullets = [
+            f"In **{payload.get('window') or 'the selected window'}**, there were **{system_count}** system-updated RTN/CR record(s) totaling **{_format_money(payload.get('credit_total'))}** with an average of **{float(payload.get('avg_days_to_system_credit') or 0.0):.1f}** day(s) from entry to system credit.",
             f"Median time to system credit is **{float(payload.get('median_days_to_system_credit') or 0.0):.1f}** day(s); outlier tickets total **{outlier_count}**{outlier_suffix}." if outlier_count else f"Median time to system credit is **{float(payload.get('median_days_to_system_credit') or 0.0):.1f}** day(s); no timing outlier tickets were flagged.",
             f"Batch update dates total **{int(payload.get('batch_dates') or 0)}**, with **{int(payload.get('batched_dates') or 0)}** multi-record batch date(s) affecting **{int(payload.get('batched_records') or 0)}** record(s) / **{_format_money(payload.get('batched_credit_total'))}**; largest system batch was **{int(payload.get('largest_batch_count') or 0)}** record(s) on **{payload.get('largest_batch_date') or 'N/A'}** totaling **{_format_money(payload.get('largest_batch_credit_total'))}**.",
         ]
-        manual_count = int(payload.get("manual_record_count") or 0)
         if manual_count:
             manual_outlier_ids = payload.get("manual_outlier_ticket_ids") or []
             manual_outlier_count = int(payload.get("manual_outlier_count") or 0)
@@ -1125,7 +1159,11 @@ def _system_updates_bullets(meta: dict[str, Any], text: str) -> list[str]:
                 f"Manual multi-record batches affected **{int(payload.get('manual_batched_records') or 0)}** record(s) / **{_format_money(payload.get('manual_batched_credit_total'))}**; largest manual batch was **{int(payload.get('manual_largest_batch_count') or 0)}** record(s) on **{payload.get('manual_largest_batch_date') or 'N/A'}** totaling **{_format_money(payload.get('manual_largest_batch_credit_total'))}**."
             )
             return bullets[:4]
-        return bullets[:3]
+        if unknown_count:
+            bullets.append(
+                f"**{unknown_count}** RTN/CR record(s) were found with a credit number but no parseable system or manual status event; they appear in the table using the last recorded status timestamp."
+            )
+        return bullets[:4]
     return _generic_text_bullets(text, max_items=4)
 
 
@@ -1231,6 +1269,22 @@ def _single_specialist_portfolio_executive_summary(run: SpecialistRun) -> str | 
         manual_count = int(payload.get("manual_record_count") or 0)
         manual_credit_total = float(payload.get("manual_credit_total") or 0.0)
         manual_avg_days = float(payload.get("manual_avg_days_to_update") or 0.0)
+        unknown_count = int(payload.get("unknown_record_count") or 0)
+
+        # When system == 0 but manual > 0, lead with manual data
+        if total_records == 0 and manual_count > 0:
+            parts = [
+                f"In {window}, all RTN/CR activity was manually assigned: **{_format_count(manual_count)}** record(s) totaling **{_format_money(manual_credit_total)}** averaging **{manual_avg_days:.1f}** day(s) to RTN assignment.",
+            ]
+            parts.append(
+                f"No system-updated records were found in this window."
+            )
+            if unknown_count:
+                parts.append(
+                    f"Additionally, **{_format_count(unknown_count)}** RTN/CR record(s) with a credit number were found but had no parseable system or manual status event and appear in the table using their last recorded timestamp."
+                )
+            return " ".join(parts)
+
         parts = [
             f"In {window}, **{_format_count(total_records)}** system-updated RTN/CR record(s) totaling **{_format_money(credit_total)}** were processed.",
             f"Median time to system credit was **{median_days:.1f}** day(s), and **{_format_count(batch_dates)}** batch update date(s) were recorded; the largest batch was **{_format_count(largest_batch_count)}** record(s) on **{largest_batch_date}** totaling **{_format_money(largest_batch_credit_total)}**.",
@@ -1238,6 +1292,10 @@ def _single_specialist_portfolio_executive_summary(run: SpecialistRun) -> str | 
         if manual_count:
             parts.append(
                 f"Manual RTN-provided updates also covered **{_format_count(manual_count)}** record(s) / **{_format_money(manual_credit_total)}**, averaging **{manual_avg_days:.1f}** day(s) to RTN assignment."
+            )
+        if unknown_count:
+            parts.append(
+                f"Additionally, **{_format_count(unknown_count)}** RTN/CR record(s) with a credit number were found but had no parseable system or manual status event and appear in the table using their last recorded timestamp."
             )
         return " ".join(parts)
 
@@ -1548,6 +1606,23 @@ def _render_portfolio_credit_brief(
             f"**{system_payload.get('largest_batch_date') or 'N/A'}** totaling **{_format_money(system_payload.get('largest_batch_credit_total'))}**."
         )
     )
+    manual_record_count = int(system_payload.get("manual_record_count") or 0)
+    manual_credit_total = float(system_payload.get("manual_credit_total") or 0.0)
+    manual_avg_days = float(system_payload.get("manual_avg_days_to_update") or 0.0)
+    unknown_count = int(system_payload.get("unknown_record_count") or 0)
+
+    attribution_lines = [
+        f"Reopened after terminal: **{_format_count(credited.get('reopened_after_terminal_count'))}** record(s).",
+    ]
+    if manual_record_count > 0:
+        attribution_lines.append(
+            f"Manual RTN-provided updates: **{manual_record_count}** record(s) / **{_format_money(manual_credit_total)}** (avg **{manual_avg_days:.1f}** days to RTN assignment)."
+        )
+    if unknown_count > 0:
+        attribution_lines.append(
+            f"**{unknown_count}** additional RTN/CR records had no parseable system or manual status event."
+        )
+
     lines.extend(
         [
             "",
@@ -1564,7 +1639,7 @@ def _render_portfolio_credit_brief(
                 f"**{_format_count(overall_payload.get('stale_investigation_count'))}** record(s) totaling "
                 f"**{_format_money(overall_payload.get('stale_investigation_total'))}**."
             ),
-            f"Reopened after terminal: **{_format_count(credited.get('reopened_after_terminal_count'))}** record(s).",
+            *attribution_lines,
             "",
             "### Section 4: Root Causes",
             f"Total exposure across root-cause groups is **{root_payload.get('total') or 'N/A'}**.",
@@ -1616,21 +1691,19 @@ def _render_overall_summary_brief(
     window = str(payload.get("window") or "the selected period").strip()
     human_window = _humanize_window_label(window) or window
 
-    manual_count = _format_count(credited.get("primary_manual_record_count"))
-    manual_total = _format_money(credited.get("primary_manual_credit_total"))
     system_count = _format_count(credited.get("primary_system_record_count"))
     system_total = _format_money(credited.get("primary_system_credit_total"))
+    manual_any_count = int(credited.get("manual_record_count") or 0)
+    manual_any_total = _format_money(credited.get("manual_credit_total"))
+    avg_days_rtn = float(credited.get("avg_days_to_rtn_assignment") or 0.0)
+    reopened_count = int(credited.get("reopened_after_terminal_count") or 0)
 
-    if float(credited.get("primary_manual_credit_total") or 0.0) == 0.0:
-        attribution_line = (
-            f"All credited activity in the period was system-led: **{system_count}** record(s) / **{system_total}**; "
-            f"manual-led activity was **{manual_count}** record(s) / **{manual_total}**."
-        )
-    else:
-        attribution_line = (
-            f"Primary attribution was system-led **{system_count}** record(s) / **{system_total}** and "
-            f"manual-led **{manual_count}** record(s) / **{manual_total}**."
-        )
+    attribution_parts = [
+        f"System-led: **{system_count}** record(s) / **{system_total}**.",
+    ]
+    if manual_any_count:
+        attribution_parts.append(f"Manual-involved: **{_format_count(manual_any_count)}** record(s) / **{manual_any_total}**.")
+    attribution_parts.append(f"Avg time to RTN assignment: **{avg_days_rtn:.1f}** day(s); **{_format_count(reopened_count)}** record(s) reopened after terminal.")
 
     lines = [
         "## Executive Summary",
@@ -1659,11 +1732,115 @@ def _render_overall_summary_brief(
             f"**{_format_count(payload.get('stale_investigation_count'))}** record(s) totaling "
             f"**{_format_money(payload.get('stale_investigation_total'))}**."
         ),
-        f"Reopened after terminal totals **{_format_count(credited.get('reopened_after_terminal_count'))}** record(s).",
         "",
         "### Section 4: Attribution",
-        attribution_line,
+        " ".join(attribution_parts),
     ]
+
+    if failed_runs:
+        lines.extend(["", "### Execution Status"])
+        for item in failed_runs:
+            lines.append(f"- {item.label} did not complete during this Auto run.")
+
+    lines.extend(["", "## Recommended Follow-Ups"])
+    follow_up_lines = _render_follow_up_links(suggestions)
+    if follow_up_lines:
+        lines.extend(follow_up_lines)
+    else:
+        lines.append("- No additional follow-ups were suggested for this request.")
+
+    return "\n".join(lines).strip()
+
+
+def _render_credit_overview_root_causes_brief(
+    *,
+    plan: AutoPlan,
+    successful_runs: list[SpecialistRun],
+    failed_runs: list[PlannedIntent],
+    suggestions: list[dict[str, str]],
+) -> str | None:
+    if plan.family != AUTO_FAMILY_PORTFOLIO:
+        return None
+    ids = {run.plan.id for run in successful_runs}
+    if ids != {"overall_summary", "credit_root_causes"} or len(successful_runs) != 2:
+        return None
+
+    run_by_id = {run.plan.id: run for run in successful_runs}
+    overall_payload = run_by_id["overall_summary"].meta.get("overall_summary")
+    root_payload = run_by_id["credit_root_causes"].meta.get("rootCauses")
+    if not isinstance(overall_payload, dict) or not isinstance(root_payload, dict):
+        return None
+
+    credited = overall_payload.get("credited_in_period")
+    if not isinstance(credited, dict):
+        credited = {}
+
+    window = str(overall_payload.get("window") or root_payload.get("period") or "the selected period").strip()
+    human_window = _humanize_window_label(window) or window
+
+    open_count = _format_count(overall_payload.get("open_record_count"))
+    open_total = _format_money(overall_payload.get("open_credit_total"))
+    credited_count = _format_count(credited.get("credited_record_count"))
+    credited_total = _format_money(credited.get("credited_credit_total"))
+    avg_open = float(overall_payload.get("avg_days_open") or 0.0)
+    avg_since_update = float(overall_payload.get("avg_days_since_last_status") or 0.0)
+    bq_count = int(overall_payload.get("billing_queue_delay_count") or 0)
+    bq_total = _format_money(overall_payload.get("billing_queue_delay_total"))
+    stale_count = int(overall_payload.get("stale_investigation_count") or 0)
+    stale_total = _format_money(overall_payload.get("stale_investigation_total"))
+    avg_rtn = float(credited.get("avg_days_to_rtn_assignment") or 0.0)
+    system_count = _format_count(credited.get("primary_system_record_count"))
+    system_total = _format_money(credited.get("primary_system_credit_total"))
+    manual_count = int(credited.get("primary_manual_record_count") or 0)
+    reopened = int(credited.get("reopened_after_terminal_count") or 0)
+    root_total = root_payload.get("total") or "N/A"
+
+    # Open exposure detail
+    bq_note = f"Billing queue delay affects **{_format_count(bq_count)}** record(s) ({bq_total})." if bq_count else "No billing queue delays."
+    stale_note = f"Stale investigation affects **{_format_count(stale_count)}** record(s) ({stale_total})." if stale_count else "No stale investigations."
+
+    # Attribution
+    attr_parts = [f"System-led credits: **{system_count}** record(s) totaling **{system_total}**."]
+    if manual_count:
+        attr_parts.append(f"Manual-involved: **{_format_count(manual_count)}** record(s).")
+    if reopened:
+        attr_parts.append(f"**{_format_count(reopened)}** record(s) reopened after terminal.")
+
+    lines = [
+        "## Executive Summary",
+        f"Period: {human_window}",
+        "",
+        "### Period Activity",
+        (
+            f"**{credited_count}** records were credited totaling **{credited_total}**, "
+            f"with an average of **{avg_rtn:.1f}** day(s) to RTN assignment. "
+            f"**{open_count}** record(s) totaling **{open_total}** remain open."
+        ),
+        "",
+        "### Open Exposure",
+        (
+            f"Open balance of **{open_total}** across **{open_count}** record(s), averaging "
+            f"**{avg_open:.1f}** day(s) open with **{avg_since_update:.1f}** day(s) since last update. "
+            f"{bq_note} {stale_note}"
+        ),
+        "",
+        "### Top Root Causes",
+        f"Total exposure across root-cause groups: **{root_total}**.",
+        "",
+    ]
+
+    for item in (root_payload.get("data") or [])[:3]:
+        if not isinstance(item, dict):
+            continue
+        lines.append(
+            f"- **{item.get('root_cause') or 'Unspecified'}**: **{_format_money(item.get('credit_request_total'))}** across **{_format_count(item.get('record_count'))}** record(s)"
+        )
+
+    lines.extend([
+        "",
+        "### Attribution",
+        " ".join(attr_parts),
+    ])
 
     if failed_runs:
         lines.extend(["", "### Execution Status"])
@@ -1706,21 +1883,20 @@ def _render_overview_trends_brief(
     window = str(overview_payload.get("window") or "the selected period").strip()
     human_window = _humanize_window_label(window) or window
 
-    manual_count = _format_count(credited.get("primary_manual_record_count"))
-    manual_total = _format_money(credited.get("primary_manual_credit_total"))
     system_count = _format_count(credited.get("primary_system_record_count"))
     system_total = _format_money(credited.get("primary_system_credit_total"))
+    manual_any_count = int(credited.get("manual_record_count") or 0)
+    manual_any_total = _format_money(credited.get("manual_credit_total"))
+    avg_days_rtn = float(credited.get("avg_days_to_rtn_assignment") or 0.0)
+    reopened_count = int(credited.get("reopened_after_terminal_count") or 0)
 
-    if float(credited.get("primary_manual_credit_total") or 0.0) == 0.0:
-        attribution_line = (
-            f"All credited activity in the period was system-led: **{system_count}** record(s) / **{system_total}**; "
-            f"manual-led activity was **{manual_count}** record(s) / **{manual_total}**."
-        )
-    else:
-        attribution_line = (
-            f"Primary attribution was system-led **{system_count}** record(s) / **{system_total}** and "
-            f"manual-led **{manual_count}** record(s) / **{manual_total}**."
-        )
+    attribution_parts = [
+        f"System-led: **{system_count}** record(s) / **{system_total}**.",
+    ]
+    if manual_any_count:
+        attribution_parts.append(f"Manual-involved: **{_format_count(manual_any_count)}** record(s) / **{manual_any_total}**.")
+    attribution_parts.append(f"Avg time to RTN assignment: **{avg_days_rtn:.1f}** day(s); **{_format_count(reopened_count)}** record(s) reopened after terminal.")
+    attribution_line = " ".join(attribution_parts)
 
     trend_metrics = trend_payload.get("metrics") if isinstance(trend_payload.get("metrics"), list) else []
     total_credit_metric = next(
@@ -1990,6 +2166,13 @@ def auto_mode_answer(query: str, df: pd.DataFrame) -> tuple[str, pd.DataFrame | 
     )
     if text is None:
         text = _render_overall_summary_brief(
+            plan=plan,
+            successful_runs=successful_runs,
+            failed_runs=failed_runs,
+            suggestions=suggestions,
+        )
+    if text is None:
+        text = _render_credit_overview_root_causes_brief(
             plan=plan,
             successful_runs=successful_runs,
             failed_runs=failed_runs,

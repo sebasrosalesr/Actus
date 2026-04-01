@@ -209,7 +209,7 @@ APP.include_router(rag_router)
 APP.include_router(help_router)
 APP.include_router(quality_router)
 
-DATA_TTL_SEC = 120
+DATA_TTL_SEC = 30
 _CACHE: Dict[str, Any] = {"df": None, "loaded_at": 0.0}
 ASK_CACHE_TTL_SEC = 90
 _ASK_CACHE: Dict[tuple[str, str, Any], Dict[str, Any]] = {}

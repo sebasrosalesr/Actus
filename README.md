@@ -180,13 +180,27 @@ cp .env.example .env
 | `ACTUS_INV_NOTE_SUMMARY` | Enables LLM summarization of investigation notes |
 | `ACTUS_INV_NOTE_SUMMARY_MAX_CHARS` | Input size cap for note summarization |
 
-#### Security and CORS
+#### Security, auth, and rate limiting
 
 | Variable | Notes |
 | --- | --- |
-| `ACTUS_API_KEY` | Protects `/api/*` and `/rag/*` (except health endpoints). Pass via `x-api-key` header or `Authorization: Bearer` |
-| `ACTUS_CORS_ORIGINS` | Comma-separated origin allowlist |
-| `ACTUS_CORS_ORIGIN_REGEX` | Regex for dynamic origins (e.g. ngrok) |
+| `ACTUS_ENV` | `development` or `production`; production enables fail-fast security validation |
+| `ACTUS_AUTH_MODE` | `api_key` or `cloudflare_access`. Required in production |
+| `ACTUS_API_KEY` | Required when `ACTUS_AUTH_MODE=api_key`. Protects all `/api/*` and `/rag/*` routes except `GET /api/health`. Pass via `x-api-key` header or `Authorization: Bearer` |
+| `ACTUS_CLOUDFLARE_ACCESS_TEAM_DOMAIN` | Required when `ACTUS_AUTH_MODE=cloudflare_access` (for example `example.cloudflareaccess.com`) |
+| `ACTUS_CLOUDFLARE_ACCESS_AUD` | Required when `ACTUS_AUTH_MODE=cloudflare_access`. Audience tag from the Access application |
+| `ACTUS_CLOUDFLARE_ACCESS_JWKS_URL` | Optional override for the Access JWKS endpoint. Defaults to `https://<team-domain>/cdn-cgi/access/certs` |
+| `ACTUS_ALLOWED_HOSTS` | Required in production. Comma-separated host allowlist for `TrustedHostMiddleware` (for example `actus-app.fly.dev`) |
+| `ACTUS_DOCS_ENABLED` | Set `false` in production to disable `/docs`, `/redoc`, and `/openapi.json` |
+| `ACTUS_CORS_ORIGINS` | Comma-separated origin allowlist. Required in production |
+| `ACTUS_CORS_ORIGIN_REGEX` | Dev-only convenience for dynamic origins (e.g. ngrok). Not allowed in production |
+| `ACTUS_RATE_LIMIT_ENABLED` | Enables app-layer rate limiting; defaults on in production |
+| `ACTUS_RATE_LIMIT_WINDOW_SEC` | Shared fixed window for app-layer rate limits; default `60` |
+| `ACTUS_RATE_LIMIT_ASK_PER_MIN` | Limit for `POST /api/ask`; default `30` |
+| `ACTUS_RATE_LIMIT_RAG_PER_MIN` | Limit for `/rag/*`; default `20` |
+| `ACTUS_RATE_LIMIT_OPENROUTER_HEALTH_PER_MIN` | Limit for `GET /api/health/openrouter`; default `5` |
+| `ACTUS_LOG_RAW_QUERIES` | If `false`, quality logs store a SHA-256 fingerprint instead of raw query text. Defaults off in production |
+| `ACTUS_LOG_TRACEBACKS` | Controls traceback logging for handled API errors. Defaults off in production |
 
 #### Runtime
 
@@ -196,6 +210,8 @@ cp .env.example .env
 | `ACTUS_RAG_REBUILD_SEC` | Interval (seconds) for periodic in-process RAG rebuilds; `0` = disabled |
 | `ACTUS_NEW_RAG_DATA_DIR` | Override default `backend/rag_data/new_design` output path |
 | `ACTUS_QUALITY_DB_PATH` | Override quality metrics SQLite path |
+| `ACTUS_QUALITY_RETENTION_DAYS` | Retention window for quality events; defaults to `90` days in production |
+| `ACTUS_QUALITY_PRUNE_INTERVAL_SEC` | How often startup/event writes trigger retention pruning; default `3600` seconds |
 | `ACTUS_RELEASE_TAG` | Labels quality events by deployment/release |
 | `ACTUS_HF_LOCAL_ONLY` | Restricts sentence-transformer loads to local cache |
 
@@ -241,11 +257,11 @@ Backend: `http://localhost:8000`
 
 | Method | Endpoint | Description |
 | --- | --- | --- |
-| `POST` | `/api/ask` | Main query endpoint |
-| `GET` | `/api/help` | Returns current help text |
+| `POST` | `/api/ask` | Main query endpoint; authenticated when production auth is configured |
+| `GET` | `/api/help` | Returns current help text; authenticated when production auth is configured |
 | `GET` | `/api/health` | Liveness check |
-| `GET` | `/api/health/openrouter` | Checks OpenRouter connectivity |
-| `GET` | `/api/user-context?email=...` | User profile lookup from Firebase |
+| `GET` | `/api/health/openrouter` | Checks OpenRouter connectivity; authenticated and rate-limited |
+| `GET` | `/api/user-context?email=...` | User profile lookup from Firebase; authenticated when production auth is configured |
 
 **`POST /api/ask` request:**
 ```json
@@ -273,22 +289,22 @@ Backend: `http://localhost:8000`
 
 | Method | Endpoint | Description |
 | --- | --- | --- |
-| `GET` | `/api/quality/summary` | Rollup for a window (e.g. `?window=28d`) |
-| `GET` | `/api/quality/trends` | Grouped trends (default: weekly over `12w`) |
+| `GET` | `/api/quality/summary` | Rollup for a window (e.g. `?window=28d`); authenticated when production auth is configured |
+| `GET` | `/api/quality/trends` | Grouped trends (default: weekly over `12w`); authenticated when production auth is configured |
 
 ### RAG
 
 | Method | Endpoint | Description |
 | --- | --- | --- |
-| `GET` | `/rag/health` | RAG service status |
-| `POST` | `/rag/new/search` | Vector search |
-| `POST` | `/rag/new/answer` | RAG-grounded answer |
-| `POST` | `/rag/new/refresh` | Rebuild index from Firebase |
-| `POST` | `/rag/new/ticket-analysis` | Ticket deep-dive |
-| `POST` | `/rag/new/item-analysis` | Item deep-dive |
-| `POST` | `/rag/new/customer-analysis` | Customer deep-dive |
-| `GET` | `/rag/ticket/{ticket_id}/refs` | Ticket RAG references |
-| `POST` | `/rag/next-action/trace` | Next-action rule trace |
+| `GET` | `/rag/health` | RAG service status; authenticated when production auth is configured |
+| `POST` | `/rag/new/search` | Vector search; authenticated and rate-limited |
+| `POST` | `/rag/new/answer` | RAG-grounded answer; authenticated and rate-limited |
+| `POST` | `/rag/new/refresh` | Rebuild index from Firebase; authenticated and rate-limited |
+| `POST` | `/rag/new/ticket-analysis` | Ticket deep-dive; authenticated and rate-limited |
+| `POST` | `/rag/new/item-analysis` | Item deep-dive; authenticated and rate-limited |
+| `POST` | `/rag/new/customer-analysis` | Customer deep-dive; authenticated and rate-limited |
+| `GET` | `/rag/ticket/{ticket_id}/refs` | Ticket RAG references; authenticated when production auth is configured |
+| `POST` | `/rag/next-action/trace` | Next-action rule trace; authenticated when production auth is configured |
 
 ## Example requests
 
@@ -317,7 +333,7 @@ curl -sS -X POST http://127.0.0.1:8000/rag/new/search \
 curl -sS http://127.0.0.1:8000/api/health | jq
 ```
 
-If `ACTUS_API_KEY` is set, include `-H 'x-api-key: $ACTUS_API_KEY'` on all protected endpoints.
+If `ACTUS_AUTH_MODE=api_key`, include `-H 'x-api-key: $ACTUS_API_KEY'` on every endpoint except `GET /api/health`. If `ACTUS_AUTH_MODE=cloudflare_access`, requests must arrive through Cloudflare Access with a valid `Cf-Access-Jwt-Assertion`.
 
 ## RAG pipeline
 
@@ -345,7 +361,16 @@ Deterministic next-action rules live in `backend/config/next_action_rules.json`.
 
 ## Quality metrics
 
-Events are stored in SQLite (`backend/rag_data/quality_metrics.sqlite` by default). Each event captures: query, intent resolved, latency, provider, and success/error status. Use `ACTUS_RELEASE_TAG` to segment events by deployment.
+Events are stored in SQLite (`backend/rag_data/quality_metrics.sqlite` by default). In production, quality logging fingerprints query text by default instead of storing raw prompts, stores client-safe error text, and prunes old rows using `ACTUS_QUALITY_RETENTION_DAYS` (default `90` days). Use `ACTUS_RELEASE_TAG` to segment events by deployment.
+
+## Security defaults
+
+- Production boot fails fast if auth, CORS, or host validation are incomplete.
+- Production boot also fails if `ACTUS_DOCS_ENABLED=true` or `ACTUS_CORS_ORIGIN_REGEX` is set.
+- `GET /api/health` is the only intentionally public endpoint.
+- All other `/api/*` and `/rag/*` routes are protected by either `ACTUS_AUTH_MODE=api_key` or `ACTUS_AUTH_MODE=cloudflare_access`.
+- App-layer rate limits apply to `POST /api/ask`, `/rag/*`, and `GET /api/health/openrouter`.
+- Provider-backed and backend error responses are sanitized in production to avoid leaking raw upstream details.
 
 ## Tests
 
@@ -365,6 +390,20 @@ npm run lint
 - Fly.io config: `backend/fly.toml`
 - Docker image: `backend/Dockerfile`
 - Process: `.venv/bin/uvicorn main:APP --host 0.0.0.0 --port 8000`
+
+Recommended production secrets before deploying to Fly:
+
+```bash
+ACTUS_ENV=production
+ACTUS_AUTH_MODE=cloudflare_access
+ACTUS_CLOUDFLARE_ACCESS_TEAM_DOMAIN=<your-team>.cloudflareaccess.com
+ACTUS_CLOUDFLARE_ACCESS_AUD=<access-audience-tag>
+ACTUS_CORS_ORIGINS=https://<frontend-domain>
+ACTUS_ALLOWED_HOSTS=actus-app.fly.dev
+ACTUS_DOCS_ENABLED=false
+```
+
+Also remove `ACTUS_CORS_ORIGIN_REGEX` from production if it is set, because production boot now rejects regex-based origin config.
 
 Scheduled index rebuild on Fly:
 

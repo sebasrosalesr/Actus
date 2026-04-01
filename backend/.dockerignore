@@ -4,3 +4,4 @@ __pycache__/
 .env
 .envrc
 .venv/
+rag_data/

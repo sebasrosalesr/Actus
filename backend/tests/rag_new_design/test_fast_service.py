@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unittest
+from unittest.mock import patch
 
 import numpy as np
 
@@ -17,6 +18,9 @@ class _FakeStore:
     def fetch_chunks(self, chunk_ids):
         _ = chunk_ids
         return []
+
+    def stats(self):
+        return {"vector_count": 2}
 
 
 class FastServiceTests(unittest.TestCase):
@@ -60,6 +64,51 @@ class FastServiceTests(unittest.TestCase):
         self.assertFalse(payload["not_found"])
         self.assertEqual(len(payload["results"]), 1)
         self.assertEqual(payload["results"][0]["ticket_id"], "R-100001")
+
+    def test_ensure_search_ready_refreshes_stale_catalog(self) -> None:
+        service = ActusHybridRAGService(
+            embed_fn=lambda texts: np.ones((len(texts), 4), dtype=np.float32)
+        )
+        stale_chunks = [
+            RetrievalChunk(
+                chunk_id=1,
+                ticket_id="R-100001",
+                chunk_type="ticket_summary",
+                text="Ticket R-100001 invoice INV100 item 100500",
+                metadata={"ticket_id": "R-100001"},
+            )
+        ]
+        service._catalog_chunks = stale_chunks
+        service._chunk_by_id = {chunk.chunk_id: chunk for chunk in stale_chunks}
+        service._store = _FakeStore()
+
+        with patch.object(service, "_refresh_catalog_from_firebase") as refresh_catalog:
+            service.ensure_search_ready()
+
+        refresh_catalog.assert_not_called()
+
+        with (
+            patch.object(service._store, "stats", return_value={"vector_count": 100}),
+            patch.object(service, "_refresh_catalog_from_firebase") as refresh_catalog,
+        ):
+            service.ensure_search_ready()
+
+        refresh_catalog.assert_called_once_with()
+
+    def test_ensure_search_ready_refreshes_when_local_catalog_missing(self) -> None:
+        service = ActusHybridRAGService(
+            embed_fn=lambda texts: np.ones((len(texts), 4), dtype=np.float32)
+        )
+        service._store = _FakeStore()
+
+        with (
+            patch.object(service, "_load_catalog_from_snapshot", return_value=None),
+            patch.object(service, "_load_catalog_from_sqlite", side_effect=RuntimeError("missing")),
+            patch.object(service, "_refresh_catalog_from_firebase") as refresh_catalog,
+        ):
+            service.ensure_search_ready()
+
+        refresh_catalog.assert_called_once_with()
 
 
 if __name__ == "__main__":

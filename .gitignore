@@ -34,3 +34,4 @@ backend/.env.*
 frontend/.env
 frontend/.env.*
 creditapp-*-firebase-adminsdk-*.json
+.vercel

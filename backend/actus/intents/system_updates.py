@@ -103,13 +103,10 @@ _SYSTEM_EVENT_PRIORITY = {
 
 
 def _has_value(series: pd.Series) -> pd.Series:
-    return (
-        series.astype(str)
-        .str.strip()
-        .str.lower()
-        .replace({"nan": "", "none": "", "n/a": "", "na": ""})
-        .ne("")
-    )
+    # Normalize missing values before string conversion so pandas 2.x and 3.x
+    # both treat NaN / <NA> / None as empty instead of truthy text tokens.
+    normalized = series.fillna("").astype(str).str.strip().str.lower()
+    return normalized.ne("") & ~normalized.isin({"nan", "none", "n/a", "na", "<na>"})
 
 
 def _naive_ts(value: pd.Timestamp | None) -> pd.Timestamp | None:

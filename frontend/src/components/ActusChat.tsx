@@ -922,7 +922,7 @@ export default function ActusChat({ userEmail, onLogout }: ActusChatProps) {
                                                 onDrillDown={(type, value) => {
                                                     const normalizedValue = String(value || '').trim();
                                                     const queries: Record<'ticket' | 'customer' | 'item', string> = {
-                                                        ticket: `ticket status ${normalizedValue}`,
+                                                        ticket: `analyze ticket ${normalizedValue}`,
                                                         customer: `analyze account ${normalizeCustomerPrefix(normalizedValue)}`,
                                                         item: `analyze item ${normalizedValue}`,
                                                     };

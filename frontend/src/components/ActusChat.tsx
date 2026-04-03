@@ -99,6 +99,13 @@ const fmtMsgTime = (ts?: number) => {
     return new Intl.DateTimeFormat('en-US', { hour: '2-digit', minute: '2-digit', hour12: false }).format(new Date(ts));
 };
 
+const normalizeCustomerPrefix = (value: string) => {
+    const text = String(value || '').trim().toUpperCase();
+    if (!text) return '';
+    const alphaPrefix = text.match(/^[A-Z]+/)?.[0];
+    return alphaPrefix || text;
+};
+
 // ─── Component ────────────────────────────────────────────────────────────────
 
 export default function ActusChat({ userEmail, onLogout }: ActusChatProps) {
@@ -913,10 +920,11 @@ export default function ActusChat({ userEmail, onLogout }: ActusChatProps) {
                                                 rows={message.rows}
                                                 meta={message.meta}
                                                 onDrillDown={(type, value) => {
-                                                    const queries: Record<string, string> = {
-                                                        ticket: `ticket status ${value}`,
-                                                        customer: `customer analysis ${value}`,
-                                                        item: `item analysis ${value}`,
+                                                    const normalizedValue = String(value || '').trim();
+                                                    const queries: Record<'ticket' | 'customer' | 'item', string> = {
+                                                        ticket: `ticket status ${normalizedValue}`,
+                                                        customer: `analyze account ${normalizeCustomerPrefix(normalizedValue)}`,
+                                                        item: `analyze item ${normalizedValue}`,
                                                     };
                                                     sendMessage(queries[type], { showUser: true, bypassPending: true, modeOverride: 'manual' });
                                                 }}

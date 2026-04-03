@@ -130,6 +130,7 @@ function sortRows(rows: Record<string, unknown>[], key: string, dir: SortDir): R
 const DRILLDOWN_COLS: Record<string, 'ticket' | 'customer' | 'item'> = {
     'Ticket Number': 'ticket',
     'Customer Number': 'customer',
+    'Account': 'customer',
     'Item Number': 'item',
     'Item': 'item',
 };

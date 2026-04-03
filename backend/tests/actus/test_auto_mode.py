@@ -693,9 +693,9 @@ class TestAutoModeExecution(unittest.TestCase):
         self.assertIn("### Section 3: Open Exposure", text)
         self.assertIn("Billing queue delay affects **34** record(s) totaling **$4,150.24**", text)
         self.assertIn("stale investigation affects **38** record(s) totaling **$2,572.62**", text)
-        self.assertIn("Reopened after terminal totals **2** record(s).", text)
         self.assertIn("### Section 4: Attribution", text)
-        self.assertIn("All credited activity in the period was system-led: **175** record(s) / **$32,309.15**; manual-led activity was **0** record(s) / **$0.00**.", text)
+        self.assertIn("System-led: **175** record(s) / **$32,309.15**.", text)
+        self.assertIn("Avg time to RTN assignment: **26.2** day(s); **2** record(s) reopened after terminal.", text)
         self.assertNotIn("## Key Findings By Specialist", text)
 
     def test_single_portfolio_prompt_uses_deterministic_renderer(self) -> None:
@@ -963,6 +963,81 @@ class TestAutoModeExecution(unittest.TestCase):
         self.assertIn("Median time to system credit was **38.6** day(s), and **9** batch update date(s) were recorded", text)
         self.assertIn("Manual RTN-provided updates also covered **702** record(s) / **$121,924.00**, averaging **123.8** day(s) to RTN assignment.", text)
         self.assertNotIn("Auto Mode ran **1/1** portfolio specialist", text)
+
+    def test_overview_with_system_updates_polishes_only_executive_summary(self) -> None:
+        plan = auto_mode.AutoPlan(
+            family="portfolio",
+            primary_intent="overall_summary",
+            target_label=None,
+            intents=(
+                auto_mode.PlannedIntent("overall_summary", "Credit overview", "credit overview"),
+                auto_mode.PlannedIntent("system_updates", "System updates with RTN", "system rtn updates"),
+            ),
+            suggestions=(),
+        )
+
+        runs = {
+            "overall_summary": auto_mode.SpecialistRun(
+                plan=plan.intents[0],
+                text="overall summary",
+                rows=None,
+                meta={
+                    "overall_summary": {
+                        "window": "2026-03-03 → 2026-04-03",
+                        "open_record_count": 148,
+                        "open_credit_total": 8228.92,
+                    },
+                    "suggestions": [],
+                },
+            ),
+            "system_updates": auto_mode.SpecialistRun(
+                plan=plan.intents[1],
+                text="system updates",
+                rows=None,
+                meta={
+                    "system_updates_summary": {
+                        "window": "2026-03-03 → 2026-04-03",
+                        "total_records": 72,
+                        "credit_total": 18166.43,
+                        "avg_days_to_system_credit": 24.8,
+                    },
+                    "suggestions": [],
+                },
+            ),
+        }
+
+        def fake_execute(intent, _df: pd.DataFrame):
+            return runs[intent.id]
+
+        with patch("actus.auto_mode.plan_auto_mode", return_value=plan):
+            with patch("actus.auto_mode._execute_planned_intent", side_effect=fake_execute):
+                text, _rows, _meta = auto_mode.auto_mode_answer(
+                    "give me credit overview and RTN updates analysis for last month",
+                    pd.DataFrame(),
+                )
+
+        self.assertIn("**Period:** March 3 – April 3, 2026", text)
+        self.assertIn(
+            "**Credit Activity**",
+            text,
+        )
+        self.assertIn(
+            "72 records resolved via system-led RTN/CR updates",
+            text,
+        )
+        self.assertIn(
+            "Total: $18,166.43 | Avg resolution: 24.8 days entry to credit",
+            text,
+        )
+        self.assertIn(
+            "**Open Exposure**",
+            text,
+        )
+        self.assertIn(
+            "$8,228.92 across 148 open records currently requiring attention",
+            text,
+        )
+        self.assertNotIn("Auto Mode ran **2/2** portfolio specialist", text)
 
     def test_overview_with_trends_renders_overview_led_brief(self) -> None:
         plan = auto_mode.AutoPlan(

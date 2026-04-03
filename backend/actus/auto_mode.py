@@ -734,6 +734,26 @@ def _humanize_window_label(value: Any) -> str:
     return f"{_format_calendar_date(start_text)} – {_format_calendar_date(end_text)}"
 
 
+def _compact_humanize_window_label(value: Any) -> str:
+    text = str(value or "").strip()
+    if not text or "→" not in text:
+        return text
+    start_text, end_text = [part.strip() for part in text.split("→", 1)]
+    try:
+        start_ts = pd.to_datetime(start_text, errors="raise")
+        end_ts = pd.to_datetime(end_text, errors="raise")
+    except Exception:
+        return _humanize_window_label(value)
+    if pd.isna(start_ts) or pd.isna(end_ts):
+        return _humanize_window_label(value)
+    if int(start_ts.year) == int(end_ts.year):
+        return (
+            f"{start_ts.strftime('%B')} {int(start_ts.day)} – "
+            f"{end_ts.strftime('%B')} {int(end_ts.day)}, {int(end_ts.year)}"
+        )
+    return _humanize_window_label(value)
+
+
 def _humanize_identifier(value: Any) -> str:
     text = str(value or "").strip()
     if not text:
@@ -1424,6 +1444,52 @@ def _single_specialist_portfolio_executive_summary(run: SpecialistRun) -> str | 
     return None
 
 
+def _overview_system_updates_executive_summary(
+    *,
+    plan: AutoPlan,
+    successful_runs: list[SpecialistRun],
+) -> str | None:
+    if plan.family != AUTO_FAMILY_PORTFOLIO or len(plan.intents) != 2:
+        return None
+    planned_ids = {item.id for item in plan.intents}
+    if planned_ids != {"overall_summary", "system_updates"} or len(successful_runs) != 2:
+        return None
+
+    run_by_id = {run.plan.id: run for run in successful_runs}
+    overall_run = run_by_id.get("overall_summary")
+    system_run = run_by_id.get("system_updates")
+    if overall_run is None or system_run is None:
+        return None
+    overall_payload = overall_run.meta.get("overall_summary")
+    system_payload = system_run.meta.get("system_updates_summary")
+    if not isinstance(overall_payload, dict) or not isinstance(system_payload, dict):
+        return None
+
+    window = (
+        _compact_humanize_window_label(overall_payload.get("window") or system_payload.get("window") or "")
+        or _humanize_window_label(overall_payload.get("window") or system_payload.get("window") or "")
+        or str(overall_payload.get("window") or system_payload.get("window") or "the selected period").strip()
+    )
+    total_records = _format_count(system_payload.get("total_records"))
+    credit_total = _format_money(system_payload.get("credit_total"))
+    avg_days = float(system_payload.get("avg_days_to_system_credit") or 0.0)
+    open_total = _format_money(overall_payload.get("open_credit_total"))
+    open_records = _format_count(overall_payload.get("open_record_count"))
+
+    return "\n".join(
+        [
+            f"**Period:** {window}",
+            "",
+            "**Credit Activity**",
+            f"{total_records} records resolved via system-led RTN/CR updates",
+            f"Total: {credit_total} | Avg resolution: {avg_days:.1f} days entry to credit",
+            "",
+            "**Open Exposure**",
+            f"{open_total} across {open_records} open records currently requiring attention",
+        ]
+    )
+
+
 def _build_specialist_sections(successful_runs: list[SpecialistRun]) -> list[dict[str, Any]]:
     sections: list[dict[str, Any]] = []
     for run in successful_runs:
@@ -1467,6 +1533,13 @@ def _executive_summary(
         single_summary = _single_specialist_portfolio_executive_summary(successful_runs[0])
         if single_summary:
             return single_summary + partial_note
+
+    overview_system_summary = _overview_system_updates_executive_summary(
+        plan=plan,
+        successful_runs=successful_runs,
+    )
+    if overview_system_summary:
+        return overview_system_summary + partial_note
 
     insight_bits = [_strip_markdown(_specialist_headline(run)) for run in successful_runs[:3]]
     joined = " ".join(insight_bits)

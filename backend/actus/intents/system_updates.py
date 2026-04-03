@@ -67,6 +67,31 @@ _CLOSED_ON_RE = re.compile(
     re.IGNORECASE,
 )
 
+_POSITIVE_RESOLUTION_PATTERNS = (
+    r"\bclosed\b",
+    r"\bresolved\b",
+    r"\bcredited\b",
+    r"\bcomplete(?:d)?\b",
+    r"\bfinish(?:ed)?\b",
+    r"\bdone\b",
+    r"\brtn\b",
+    r"\bcr\s*#\b",
+    r"\brtn\s*#\b",
+    r"\bcredit\s*#\b",
+)
+
+_METADATA_UPDATE_PATTERNS = (
+    r"\bassigned to\b",
+    r"\bpriority changed\b",
+    r"\buploaded\b",
+    r"\bupload\b",
+    r"\bnote added\b",
+    r"\bcomment added\b",
+    r"\breassigned\b",
+    r"\bstatus updated\b",
+    r"\bupdated by\b",
+)
+
 _MANUAL_EVENT_PRIORITY = {
     "manual_credit_number": 1,
     "manual_closure": 2,
@@ -510,12 +535,23 @@ def intent_system_updates(query: str, df: pd.DataFrame):
     covered_idx = set(system_rows.index) | set(manual_rows.index)
     fallback_mask = rtn_mask & ~df_use.index.isin(covered_idx)
     fallback_rows = df_use[fallback_mask].copy()
+
     if not fallback_rows.empty:
         fallback_time = fallback_rows["Last_Status_Time"].where(
             fallback_rows["Last_Status_Time"].notna(),
             other=pd.to_datetime(fallback_rows.get("Date"), errors="coerce"),
         )
-        fallback_rows = fallback_rows[fallback_time.notna()].copy()
+        msg_low = fallback_rows["Last_Status_Message"].fillna("").astype(str).str.lower()
+        has_pos = msg_low.str.contains("|".join(_POSITIVE_RESOLUTION_PATTERNS), regex=True, na=False)
+        has_ignore = msg_low.str.contains("|".join(_METADATA_UPDATE_PATTERNS), regex=True, na=False)
+        
+        creation_date = pd.to_datetime(fallback_rows.get("Date"), errors="coerce")
+        days_since_created = (fallback_time - creation_date).dt.days
+        recent_creation = (days_since_created <= 60) | fallback_rows.get("Date").isna()
+        
+        valid_fallback_mask = (has_pos | recent_creation) & (~has_ignore)
+        fallback_rows = fallback_rows[valid_fallback_mask & fallback_time.notna()].copy()
+        
         if not fallback_rows.empty:
             fallback_time = fallback_time[fallback_rows.index]
             fallback_rows["Update Source"] = "unknown"

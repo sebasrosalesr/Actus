@@ -334,17 +334,35 @@ export function AnomalyScan({ rows = [], csvRows = [], onReviewTicket }: Anomaly
                         <td className="px-6 py-4 font-semibold text-white">{row.ticketId}</td>
                         <td className="px-6 py-4 text-slate-400 font-mono text-xs">{row.date}</td>
                         <td className="px-6 py-4 font-mono text-rose-300 font-bold">{formatCurrency(row.amount)}</td>
-                        <td className="px-6 py-4 font-mono text-cyan-300 font-semibold">{row.zScore == null ? 'n/a' : row.zScore.toFixed(2)}</td>
+                        <td className="px-6 py-4 font-mono font-semibold">
+                          <span className="text-slate-300">{row.zScore == null ? 'n/a' : row.zScore.toFixed(2)}</span>
+                          {row.zScore != null && (
+                            <span className={`ml-1.5 text-[9px] font-bold uppercase tracking-wider ${
+                              Math.abs(row.zScore) >= 3 ? 'text-rose-400' :
+                              Math.abs(row.zScore) >= 2 ? 'text-amber-400' : 'text-slate-500'
+                            }`}>
+                              {Math.abs(row.zScore) >= 3 ? '▲ HIGH' : Math.abs(row.zScore) >= 2 ? '▲ MOD' : 'LOW'}
+                            </span>
+                          )}
+                        </td>
                         <td className="px-6 py-4">
-                          <span className={`inline-flex items-center px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-widest border ${
-                            row.flag.toLowerCase().includes('both')
-                              ? 'bg-purple-500/10 text-purple-300 border-purple-500/20'
-                              : row.flag.toLowerCase().includes('cap')
-                                ? 'bg-rose-500/10 text-rose-300 border-rose-500/20'
-                                : 'bg-cyan-500/10 text-cyan-300 border-cyan-500/20'
-                          }`}>
-                            {row.flag}
-                          </span>
+                          {(() => {
+                            const f = row.flag.toLowerCase();
+                            const isBoth = f.includes('both');
+                            const isCap = f.includes('cap');
+                            return (
+                              <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-widest border ${
+                                isBoth
+                                  ? 'bg-purple-500/10 text-purple-300 border-purple-500/20'
+                                  : isCap
+                                    ? 'bg-rose-500/10 text-rose-300 border-rose-500/20'
+                                    : 'bg-cyan-500/10 text-cyan-300 border-cyan-500/20'
+                              }`}>
+                                <span aria-hidden="true">{isBoth ? '◆' : isCap ? '▲' : '●'}</span>
+                                {row.flag}
+                              </span>
+                            );
+                          })()}
                         </td>
                         <td className="px-6 py-4">
                           <button

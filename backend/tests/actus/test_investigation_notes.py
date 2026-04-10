@@ -80,9 +80,8 @@ class TestInvestigationNotesIntent(unittest.TestCase):
     def test_ticket_query_returns_ticket_level_summary(self) -> None:
         llm_response = "\n".join(
             [
-                "- Correct supported price is $11.76/cs while invoices were billed at $14.16/cs.",
-                "- Earlier pricing guidance conflicted across $11.80, $14.16, and $11.76, pointing to communication error.",
-                "- Credit resolution still needs Jeff approval before proceeding.",
+                "- Likely issue: correct supported price is $11.76/cs while invoices were billed at $14.16/cs.",
+                "- Why this is likely: earlier pricing guidance conflicted across $11.80, $14.16, and $11.76, pointing to communication error in the notes.",
             ]
         )
 
@@ -97,14 +96,15 @@ class TestInvestigationNotesIntent(unittest.TestCase):
                 )
 
         self.assertIsNone(rows)
-        self.assertIn("### Key takeaways", text)
+        self.assertNotIn("Here are the investigation notes for ticket", text)
+        self.assertNotIn("### Key takeaways", text)
+        self.assertNotIn("Likely issue:", text)
         self.assertIn("Reviewed **2** unique note body/bodies across **3** ticket note(s).", text)
         self.assertIn("Relevant notes reviewed:", text)
         self.assertEqual(
             [
-                "Correct supported price is $11.76/cs while invoices were billed at $14.16/cs.",
-                "Earlier pricing guidance conflicted across $11.80, $14.16, and $11.76, pointing to communication error.",
-                "Credit resolution still needs Jeff approval before proceeding.",
+                "Likely issue: correct supported price is $11.76/cs while invoices were billed at $14.16/cs.",
+                "Why this is likely: earlier pricing guidance conflicted across $11.80, $14.16, and $11.76, pointing to communication error in the notes.",
             ],
             meta["note_summary"]["bullets"],
         )
@@ -125,7 +125,6 @@ class TestInvestigationNotesIntent(unittest.TestCase):
                         [
                             "Fallback says the correct price is $11.76/cs.",
                             "Fallback highlights the billed price at $14.16/cs.",
-                            "Fallback notes approval is still required.",
                         ],
                         {"source": "openrouter_primary", "model": "openai/gpt-4o-mini"},
                     ),
@@ -136,12 +135,64 @@ class TestInvestigationNotesIntent(unittest.TestCase):
                     )
 
         self.assertIsNone(rows)
-        self.assertIn("Fallback says the correct price is $11.76/cs.", text)
+        self.assertNotIn("Here are the investigation notes for ticket", text)
+        self.assertNotIn("Likely issue: Fallback says the correct price is $11.76/cs.", text)
         self.assertEqual(
             [
-                "Fallback says the correct price is $11.76/cs.",
-                "Fallback highlights the billed price at $14.16/cs.",
-                "Fallback notes approval is still required.",
+                "Likely issue: Fallback says the correct price is $11.76/cs.",
+                "Why this is likely: Fallback highlights the billed price at $14.16/cs.",
+            ],
+            meta["note_summary"]["bullets"],
+        )
+
+    def test_ticket_query_synthesizes_from_item_and_background_lines(self) -> None:
+        notes = pd.DataFrame(
+            [
+                {
+                    "Note ID": "note-1",
+                    "Firebase Key": "firebase-1",
+                    "Ticket Number": "R-053236",
+                    "Combo Key": "INV13925842|010-005-40",
+                    "Invoice Number": "INV13925842",
+                    "Item Number": "010-005-40",
+                    "Title": "Case file INV13925842 010-005-40",
+                    "Body": (
+                        "Background\n\n"
+                        "Item Number: 010-005-40\n\n"
+                        "Notes on Background: 010-102576 WAS SUBBED AND PRICING NOT MATCHED\n"
+                    ),
+                    "Created At": "2025-12-24T13:59:44Z",
+                    "Created By": "ops",
+                    "Updated At": "2025-12-24T13:59:44Z",
+                    "Updated By": "ops",
+                }
+            ]
+        )
+
+        with patch(
+            "actus.intents.investigation_notes._load_investigation_notes",
+            return_value=notes,
+        ):
+            with patch(
+                "actus.intents.investigation_notes._summarize_ticket_note_samples",
+                return_value=(None, {"source": None, "model": None}),
+            ):
+                with patch(
+                    "actus.intents.investigation_notes._summarize_note_body",
+                    return_value=(None, {"source": None, "model": None}),
+                ):
+                    text, rows, meta = investigation_notes.intent_investigation_notes(
+                        "investigation notes for ticket R-053236",
+                        pd.DataFrame(),
+                    )
+
+        self.assertIsNone(rows)
+        self.assertNotIn("Here are the investigation notes for ticket", text)
+        self.assertNotIn("Likely issue: Item 010-005-40 appears tied to substituted item 010-102576, and the pricing did not match.", text)
+        self.assertEqual(
+            [
+                "Likely issue: Item 010-005-40 appears tied to substituted item 010-102576, and the pricing did not match.",
+                "Why this is likely: The reviewed note explicitly states that 010-102576 was substituted and pricing did not match.",
             ],
             meta["note_summary"]["bullets"],
         )

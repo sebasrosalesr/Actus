@@ -16,6 +16,7 @@ const Login: React.FC<LoginProps> = ({ onLogin }) => {
     const [isSuccess, setIsSuccess] = useState(false);
     const [showGreeting, setShowGreeting] = useState(false);
     const [greetingName, setGreetingName] = useState('');
+    const [formError, setFormError] = useState('');
     const envFirstName =
         (import.meta.env.VITE_USER_FIRST_NAME as string | undefined)
         || (import.meta.env.VITE_USER_NAME as string | undefined)
@@ -45,10 +46,9 @@ const Login: React.FC<LoginProps> = ({ onLogin }) => {
         const trimmedEmail = email.trim();
         const trimmedPassword = password.trim();
 
-        if (!trimmedEmail || !trimmedPassword) {
-            return;
-        }
-
+        if (!trimmedEmail) { setFormError('Email is required.'); return; }
+        if (!trimmedPassword) { setFormError('Password is required.'); return; }
+        setFormError('');
         setIsLoading(true);
         let resolvedFirstName = '';
         try {
@@ -143,7 +143,7 @@ const Login: React.FC<LoginProps> = ({ onLogin }) => {
                         </div>
 
                         {/* Form */}
-                        <form onSubmit={handleSubmit} className="space-y-6">
+                        <form onSubmit={handleSubmit} className="space-y-6" noValidate>
                             <div className="space-y-2">
                                 <label className="text-xs font-bold text-slate-500 uppercase tracking-widest pl-1">Email Address</label>
                                 <div className="relative group/input">
@@ -183,6 +183,13 @@ const Login: React.FC<LoginProps> = ({ onLogin }) => {
                                 </label>
                                 <a href="#" className="text-cyan-400 hover:text-cyan-300 transition-colors hover:underline">Forgot password?</a>
                             </div>
+
+                            {formError && (
+                                <div role="alert" className="flex items-center gap-2 px-3 py-2 rounded-lg bg-rose-500/10 border border-rose-500/20 text-xs text-rose-300 -mt-2">
+                                    <span className="w-1.5 h-1.5 rounded-full bg-rose-400 flex-shrink-0" />
+                                    {formError}
+                                </div>
+                            )}
 
                             <button
                                 type="submit"

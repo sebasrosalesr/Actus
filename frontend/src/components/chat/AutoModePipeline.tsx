@@ -1,4 +1,5 @@
 import { CheckCircle2, AlertCircle, Loader2, Zap, GitBranch } from 'lucide-react';
+import { useState, useEffect } from 'react';
 
 type ExecutedIntent = {
     id?: string;
@@ -115,21 +116,39 @@ export function AutoModePipeline({ executedIntents, isActive, primaryIntent, pla
     );
 }
 
+const AUTO_PHASES = [
+    'Routing to specialists…',
+    'Querying credit records…',
+    'Running intent analysis…',
+    'Aggregating results…',
+    'Composing response…',
+];
+
 /* Compact loading indicator shown while auto-mode is actively running */
 export function AutoModeLoading({ mode }: { mode: 'manual' | 'auto' }) {
+    const [phaseIdx, setPhaseIdx] = useState(0);
+
+    useEffect(() => {
+        if (mode !== 'auto') return;
+        const id = setInterval(() => {
+            setPhaseIdx(p => (p + 1) % AUTO_PHASES.length);
+        }, 2200);
+        return () => clearInterval(id);
+    }, [mode]);
+
     return (
         <div className="flex gap-4 animate-fade-in-up" style={{ animationDelay: '120ms', animationFillMode: 'both' }}>
             <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-cyan-500 to-indigo-600 flex items-center justify-center flex-shrink-0 shadow-lg shadow-cyan-500/10 mt-1">
                 <Zap className="w-4 h-4 text-white animate-pulse" />
             </div>
-            <div className="bg-slate-800/40 border border-white/5 rounded-2xl rounded-tl-sm px-5 py-3.5 shadow-lg flex items-center gap-3">
-                <div className="flex items-center gap-1.5">
+            <div className="bg-slate-800/40 border border-white/5 rounded-2xl rounded-tl-sm px-5 py-3.5 shadow-lg flex items-center gap-3 min-w-[220px]">
+                <div className="flex items-center gap-1.5 flex-shrink-0">
                     <div className="w-2 h-2 rounded-full bg-cyan-400 animate-bounce" style={{ animationDelay: '0ms' }} />
                     <div className="w-2 h-2 rounded-full bg-cyan-400 animate-bounce" style={{ animationDelay: '150ms' }} />
                     <div className="w-2 h-2 rounded-full bg-cyan-400 animate-bounce" style={{ animationDelay: '300ms' }} />
                 </div>
-                <span className="text-xs text-slate-500 font-medium">
-                    {mode === 'auto' ? 'Orchestrating specialists…' : 'Thinking…'}
+                <span key={phaseIdx} className="text-xs text-slate-400 font-medium animate-fade-in">
+                    {mode === 'auto' ? AUTO_PHASES[phaseIdx] : 'Thinking…'}
                 </span>
             </div>
         </div>

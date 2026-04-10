@@ -1,4 +1,5 @@
-import { X, Sparkles, Trash2, TrendingUp, ArrowRight } from 'lucide-react';
+import { useState } from 'react';
+import { X, Sparkles, Trash2, TrendingUp, ArrowRight, Keyboard, ChevronDown } from 'lucide-react';
 import type { UserContext, ContextualSuggestion, AskMode } from './types';
 
 type SuggestedIntent = {
@@ -7,6 +8,61 @@ type SuggestedIntent = {
     scope?: string;
     mode?: AskMode;
 };
+
+const SHORTCUTS = [
+    { keys: ['↵'], label: 'Send message' },
+    { keys: ['⇧', '↵'], label: 'New line' },
+    { keys: ['Esc'], label: 'Close sidebar' },
+];
+
+function KeyboardShortcuts() {
+    const [open, setOpen] = useState(false);
+    return (
+        <div>
+            <button
+                onClick={() => setOpen(o => !o)}
+                aria-expanded={open}
+                className="w-full flex items-center justify-between px-2 mb-2 group"
+            >
+                <div className="flex items-center gap-2">
+                    <div className="w-1 h-1 rounded-full bg-slate-500" />
+                    <h3 className="text-[10px] font-bold text-slate-500 uppercase tracking-widest group-hover:text-slate-400 transition-colors">
+                        Keyboard Shortcuts
+                    </h3>
+                </div>
+                <div className="flex items-center gap-1 text-slate-600 group-hover:text-slate-400 transition-colors">
+                    <Keyboard className="w-3 h-3" />
+                    <ChevronDown className={`w-3 h-3 transition-transform duration-200 ${open ? 'rotate-180' : ''}`} />
+                </div>
+            </button>
+            {open && (
+                <div className="rounded-xl bg-white/[0.03] border border-white/[0.06] divide-y divide-white/[0.04] overflow-hidden">
+                    {SHORTCUTS.map(({ keys, label }) => (
+                        <div key={label} className="flex items-center justify-between px-3 py-2.5">
+                            <span className="text-xs text-slate-400">{label}</span>
+                            <div className="flex items-center gap-1">
+                                {keys.map(k => (
+                                    <kbd key={k} className="px-1.5 py-0.5 rounded bg-white/[0.06] border border-white/[0.1] text-[10px] font-mono text-slate-300 leading-none">
+                                        {k}
+                                    </kbd>
+                                ))}
+                            </div>
+                        </div>
+                    ))}
+                </div>
+            )}
+        </div>
+    );
+}
+
+const TIMEZONES = [
+    { label: 'Indianapolis (ET)', value: 'America/Indiana/Indianapolis' },
+    { label: 'New York (ET)', value: 'America/New_York' },
+    { label: 'Chicago (CT)', value: 'America/Chicago' },
+    { label: 'Denver (MT)', value: 'America/Denver' },
+    { label: 'Los Angeles (PT)', value: 'America/Los_Angeles' },
+    { label: 'UTC', value: 'UTC' },
+];
 
 type ChatSidebarProps = {
     isOpen: boolean;
@@ -18,6 +74,8 @@ type ChatSidebarProps = {
     onSendMessage: (query: string, opts?: { bypassPending?: boolean; modeOverride?: AskMode }) => void;
     onClearMessages: () => void;
     hasMessages: boolean;
+    timezone: string;
+    onTimezoneChange: (tz: string) => void;
 };
 
 export function ChatSidebar({
@@ -30,6 +88,8 @@ export function ChatSidebar({
     onSendMessage,
     onClearMessages,
     hasMessages,
+    timezone,
+    onTimezoneChange,
 }: ChatSidebarProps) {
     return (
         <>
@@ -70,6 +130,7 @@ export function ChatSidebar({
                         </div>
                         <button
                             onClick={onClose}
+                            aria-label="Close sidebar"
                             className="p-2 -mr-1 text-slate-400 hover:text-white hover:bg-white/5 rounded-lg transition-colors group"
                         >
                             <X className="w-5 h-5 group-hover:rotate-90 transition-transform duration-300" />
@@ -137,6 +198,29 @@ export function ChatSidebar({
                             </div>
                         </div>
 
+                        {/* ── Keyboard shortcuts ── */}
+                        <KeyboardShortcuts />
+
+                        {/* ── Timezone ── */}
+                        <div>
+                            <div className="flex items-center gap-2 mb-3 px-2">
+                                <div className="w-1 h-1 rounded-full bg-slate-500" />
+                                <h3 className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Display Timezone</h3>
+                            </div>
+                            <select
+                                value={timezone}
+                                onChange={e => onTimezoneChange(e.target.value)}
+                                aria-label="Select display timezone"
+                                className="w-full px-3 py-2 rounded-xl bg-white/[0.04] border border-white/[0.08] text-sm text-slate-300 focus:outline-none focus:border-cyan-500/40 transition-colors appearance-none cursor-pointer"
+                            >
+                                {TIMEZONES.map(tz => (
+                                    <option key={tz.value} value={tz.value} className="bg-slate-900">
+                                        {tz.label}
+                                    </option>
+                                ))}
+                            </select>
+                        </div>
+
                         {/* ── Recent chats ── */}
                         <div>
                             <div className="flex items-center justify-between mb-3 px-2">
@@ -146,9 +230,15 @@ export function ChatSidebar({
                                 </div>
                                 {hasMessages && (
                                     <button
-                                        onClick={() => { onClearMessages(); onClose(); }}
+                                        onClick={() => {
+                                            if (window.confirm('Clear all messages? This cannot be undone.')) {
+                                                onClearMessages();
+                                                onClose();
+                                            }
+                                        }}
                                         className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[10px] font-semibold text-slate-500 hover:text-rose-400 hover:bg-rose-500/[0.07] border border-transparent hover:border-rose-500/20 transition-all uppercase tracking-wide"
                                         title="Clear conversation"
+                                        aria-label="Clear all messages"
                                     >
                                         <Trash2 className="w-3 h-3" />
                                         Clear

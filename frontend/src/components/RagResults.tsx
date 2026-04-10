@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { Search, Sparkles, FileText, Database, ArrowRight, X, Activity, Target } from "lucide-react";
 import { Analysis, CustomerAnalysis } from "./Analysis";
+import { useToast } from "./chat/Toast";
 
 type RagSnippet = {
   text: string;
@@ -304,6 +305,7 @@ export function RagResults({
 }: {
   apiBase?: string;
 }) {
+  const { addToast } = useToast();
   const [query, setQuery] = useState("");
   const [topK, setTopK] = useState(10);
   const [openRefsFor, setOpenRefsFor] = useState<string | null>(null);
@@ -346,8 +348,10 @@ export function RagResults({
       setItemAnalysis(null);
       setCustomerAnalysis(null);
       setTicketAnalysis(null);
+      addToast(`${mapped.results.length} result${mapped.results.length !== 1 ? 's' : ''} found`, 'success');
     } catch (e: any) {
       setError(e?.message ?? "Search failed");
+      addToast("Search failed", "error");
     } finally {
       setLoading(false);
     }
@@ -373,8 +377,10 @@ export function RagResults({
       setCustomerAnalysis(null);
       setTicketAnalysis(null);
       setData({ results: [] });
+      addToast(`Item ${json.item_number} analysis ready`, 'success');
     } catch (e: any) {
       setError(e?.message ?? "Item analysis failed");
+      addToast("Item analysis failed", "error");
     } finally {
       setLoading(false);
     }
@@ -400,8 +406,10 @@ export function RagResults({
       setItemAnalysis(null);
       setTicketAnalysis(null);
       setData({ results: [] });
+      addToast(`Account ${json.normalized_query} analysis ready`, 'success');
     } catch (e: any) {
       setError(e?.message ?? "Customer analysis failed");
+      addToast("Account analysis failed", "error");
     } finally {
       setLoading(false);
     }
@@ -427,8 +435,10 @@ export function RagResults({
       setItemAnalysis(null);
       setCustomerAnalysis(null);
       setData({ results: [] });
+      addToast(`Ticket ${json.ticket_id} analysis ready`, 'success');
     } catch (e: any) {
       setError(e?.message ?? "Ticket analysis failed");
+      addToast("Ticket analysis failed", "error");
     } finally {
       setLoading(false);
     }
@@ -503,8 +513,8 @@ export function RagResults({
     <div className="w-full max-w-6xl mx-auto p-4 md:p-8 font-sans text-slate-200">
       {/* Background Ambience */}
       <div className="fixed inset-0 overflow-hidden pointer-events-none -z-10">
-        <div className="absolute top-[20%] left-[10%] w-[600px] h-[600px] bg-indigo-900/10 rounded-full blur-[120px] animate-pulse-slow"></div>
-        <div className="absolute bottom-[20%] right-[10%] w-[500px] h-[500px] bg-cyan-900/10 rounded-full blur-[100px] animate-float"></div>
+        <div className="absolute top-[20%] left-[10%] w-[600px] h-[600px] bg-indigo-900/10 rounded-full blur-[120px] motion-safe:animate-pulse-slow"></div>
+        <div className="absolute bottom-[20%] right-[10%] w-[500px] h-[500px] bg-cyan-900/10 rounded-full blur-[100px] motion-safe:animate-float"></div>
       </div>
 
       <div
@@ -530,29 +540,29 @@ export function RagResults({
           </div>
 
           {/* Search Bar */}
-          <div className="relative group z-20">
-            <div className="absolute -inset-1 bg-gradient-to-r from-cyan-500/20 via-indigo-500/20 to-cyan-500/20 rounded-2xl blur-md opacity-40 group-hover:opacity-100 transition duration-700"></div>
-            <div className="relative flex items-center bg-obsidian-950/80 backdrop-blur-2xl border border-white/[0.08] group-hover:border-white/[0.15] rounded-2xl p-2 shadow-2xl transition-all duration-300">
-              <div className="pl-4 text-cyan-400/80 group-focus-within:text-cyan-400 transition-colors">
-                <Search className="w-6 h-6" />
-              </div>
-              <input
-                className="flex-1 bg-transparent border-none px-4 py-4 text-lg text-slate-100 placeholder:text-slate-500 focus:ring-0 focus:outline-none font-sans"
-                value={query}
-                onChange={(e) => setQuery(e.target.value)}
-                placeholder="Describe the issue (e.g., 'unexpected credit spike', 'pricing error')"
-                onKeyDown={(e) => e.key === 'Enter' && runSearch()}
-              />
+          <div className="flex flex-col gap-3 z-20">
+            <div className="relative group">
+              <div className="absolute -inset-1 bg-gradient-to-r from-cyan-500/20 via-indigo-500/20 to-cyan-500/20 rounded-2xl blur-md opacity-40 group-hover:opacity-100 transition duration-700"></div>
+              <div className="relative flex items-center bg-obsidian-950/80 backdrop-blur-2xl border border-white/[0.08] group-hover:border-white/[0.15] rounded-2xl px-4 shadow-2xl transition-all duration-300">
+                <div className="text-cyan-400/80 group-focus-within:text-cyan-400 transition-colors flex-shrink-0">
+                  <Search className="w-5 h-5" />
+                </div>
+                <input
+                  className="flex-1 bg-transparent border-none px-4 py-5 text-base text-slate-100 placeholder:text-slate-500 focus:ring-0 focus:outline-none font-sans"
+                  value={query}
+                  onChange={(e) => setQuery(e.target.value)}
+                  placeholder="Describe the issue (e.g., 'unexpected credit spike', 'pricing error')"
+                  onKeyDown={(e) => e.key === 'Enter' && runSearch()}
+                />
 
-              <div className="h-8 w-[1px] bg-white/10 mx-2"></div>
+                <div className="h-8 w-[1px] bg-white/10 mx-3 flex-shrink-0"></div>
 
-              <div className="flex items-center gap-3 pr-2">
-                <div className="hidden md:flex flex-col items-end mr-2">
-                  <span className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">
+                <div className="hidden md:flex flex-col items-center gap-0.5 flex-shrink-0 mr-3">
+                  <span className="text-[9px] font-bold text-slate-500 uppercase tracking-widest whitespace-nowrap">
                     Max Results
                   </span>
                   <input
-                    className="w-12 bg-transparent text-right text-sm font-bold text-slate-300 focus:text-cyan-400 focus:outline-none transition-colors border-b border-transparent focus:border-cyan-500/50 appearance-none"
+                    className="w-12 bg-transparent text-center text-sm font-bold text-slate-300 focus:text-cyan-400 focus:outline-none transition-colors border-b border-transparent focus:border-cyan-500/50 appearance-none"
                     style={{ WebkitAppearance: 'none', MozAppearance: 'textfield' }}
                     type="number"
                     min={1}
@@ -563,7 +573,7 @@ export function RagResults({
                 </div>
 
                 <button
-                  className="px-8 py-3 rounded-xl bg-cyan-500 hover:bg-cyan-400 text-obsidian-950 font-bold text-sm tracking-wide transition-all duration-300 shadow-[0_0_20px_-5px_rgba(6,182,212,0.4)] hover:shadow-[0_0_30px_-5px_rgba(6,182,212,0.6)] hover:scale-[1.02] active:scale-[0.98] disabled:opacity-50 disabled:cursor-not-allowed disabled:transform-none"
+                  className="flex-shrink-0 px-6 py-2.5 rounded-xl bg-cyan-500 hover:bg-cyan-400 text-obsidian-950 font-bold text-sm tracking-wide transition-all duration-300 shadow-[0_0_20px_-5px_rgba(6,182,212,0.4)] hover:shadow-[0_0_30px_-5px_rgba(6,182,212,0.6)] hover:scale-[1.02] active:scale-[0.98] disabled:opacity-50 disabled:cursor-not-allowed disabled:transform-none"
                   onClick={runSearch}
                   disabled={loading}
                 >
@@ -579,28 +589,36 @@ export function RagResults({
                     </div>
                   )}
                 </button>
-                <button
-                  className="px-5 py-3 rounded-xl bg-white/[0.04] hover:bg-cyan-500/10 border border-white/[0.08] hover:border-cyan-500/30 text-slate-200 hover:text-cyan-200 font-bold text-sm tracking-wide transition-all duration-300 disabled:opacity-50 disabled:cursor-not-allowed hidden md:block"
-                  onClick={runItemAnalysis}
-                  disabled={loading}
-                >
-                  Analyze Item
-                </button>
-                <button
-                  className="px-5 py-3 rounded-xl bg-white/[0.04] hover:bg-cyan-500/10 border border-white/[0.08] hover:border-cyan-500/30 text-slate-200 hover:text-cyan-200 font-bold text-sm tracking-wide transition-all duration-300 disabled:opacity-50 disabled:cursor-not-allowed hidden md:block"
-                  onClick={runCustomerAnalysis}
-                  disabled={loading}
-                >
-                  Analyze Account
-                </button>
-                <button
-                  className="px-5 py-3 rounded-xl bg-white/[0.04] hover:bg-cyan-500/10 border border-white/[0.08] hover:border-cyan-500/30 text-slate-200 hover:text-cyan-200 font-bold text-sm tracking-wide transition-all duration-300 disabled:opacity-50 disabled:cursor-not-allowed hidden md:block"
-                  onClick={runTicketAnalysis}
-                  disabled={loading}
-                >
-                  Analyze Ticket
-                </button>
               </div>
+            </div>
+
+            {/* Action Buttons Row */}
+            <div className="hidden md:flex items-center gap-3 pl-1">
+              <span className="text-xs text-slate-600 font-medium mr-1">Deep analysis:</span>
+              <button
+                className="px-5 py-2.5 rounded-xl bg-white/[0.04] hover:bg-cyan-500/10 border border-white/[0.08] hover:border-cyan-500/30 text-slate-300 hover:text-cyan-200 font-semibold text-sm tracking-wide transition-all duration-300 disabled:opacity-40 disabled:cursor-not-allowed flex items-center gap-2"
+                onClick={runItemAnalysis}
+                disabled={loading}
+              >
+                <Target className="w-3.5 h-3.5" />
+                Analyze Item
+              </button>
+              <button
+                className="px-5 py-2.5 rounded-xl bg-white/[0.04] hover:bg-cyan-500/10 border border-white/[0.08] hover:border-cyan-500/30 text-slate-300 hover:text-cyan-200 font-semibold text-sm tracking-wide transition-all duration-300 disabled:opacity-40 disabled:cursor-not-allowed flex items-center gap-2"
+                onClick={runCustomerAnalysis}
+                disabled={loading}
+              >
+                <Database className="w-3.5 h-3.5" />
+                Analyze Account
+              </button>
+              <button
+                className="px-5 py-2.5 rounded-xl bg-white/[0.04] hover:bg-cyan-500/10 border border-white/[0.08] hover:border-cyan-500/30 text-slate-300 hover:text-cyan-200 font-semibold text-sm tracking-wide transition-all duration-300 disabled:opacity-40 disabled:cursor-not-allowed flex items-center gap-2"
+                onClick={runTicketAnalysis}
+                disabled={loading}
+              >
+                <FileText className="w-3.5 h-3.5" />
+                Analyze Ticket
+              </button>
             </div>
           </div>
 
@@ -1057,6 +1075,32 @@ export function RagResults({
             );
           })}
 
+          {/* Initial state — nothing searched yet */}
+          {!loading && !data && !ticketAnalysis && !customerAnalysis && !itemAnalysis && (
+            <div className="flex flex-col items-center justify-center py-20 text-center gap-4">
+              <div className="p-4 rounded-2xl bg-cyan-500/[0.07] border border-cyan-500/15">
+                <Search className="w-8 h-8 text-cyan-500/60" />
+              </div>
+              <div>
+                <p className="text-slate-300 font-semibold text-lg">Start with a query</p>
+                <p className="text-slate-500 text-sm mt-1 max-w-sm">
+                  Describe a credit issue or enter an item number, account prefix, or ticket ID above.
+                </p>
+              </div>
+              <div className="flex flex-wrap justify-center gap-2 mt-2">
+                {['unexpected credit spike', 'pricing error', 'item 1007986', 'account SGP'].map(hint => (
+                  <span
+                    key={hint}
+                    className="px-3 py-1.5 rounded-lg bg-white/[0.04] border border-white/[0.07] text-xs text-slate-500 font-mono"
+                  >
+                    {hint}
+                  </span>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Post-search empty state */}
           {!loading && data && results.length === 0 && (
             <div className="rounded-2xl border border-dashed border-white/10 p-8 text-center">
               <div className="flex justify-center mb-4">

@@ -335,10 +335,11 @@ def _summarize_ticket_note_samples(
 
     system_prompt = (
         "You summarize investigation notes for a single credit ticket. "
-        "Return exactly 3 concise bullet lines and nothing else. "
+        "Return exactly 2 concise bullet lines and nothing else. "
+        "The first bullet must start with 'Likely issue:' and state the most likely pricing, substitution, or root-cause conclusion in one sentence. "
+        "The second bullet must start with 'Why this is likely:' and explain the note evidence that supports that conclusion in one sentence. "
         "Only use facts present in the provided notes. "
-        "Prioritize the actual pricing or root-cause conclusion, the conflicting evidence or blocker, "
-        "and the next operational action or approval dependency. "
+        "Prioritize the actual pricing or root-cause conclusion and the evidence trail behind it. "
         "Ignore note IDs, command tokens, and repetitive invoice listings."
     )
     user_prompt = (
@@ -367,16 +368,148 @@ def _summarize_ticket_note_samples(
         except Exception:
             return None, summary_meta
 
-    bullets: list[str] = []
-    for line in response.splitlines():
-        cleaned = line.strip()
+    bullets = _coerce_ticket_summary_bullets(response.splitlines())
+    if not bullets:
+        return None, summary_meta
+    return bullets[:2], summary_meta
+
+
+def _coerce_ticket_summary_bullets(lines: list[str]) -> list[str]:
+    cleaned_lines: list[str] = []
+    for raw in lines:
+        cleaned = str(raw or "").strip()
         if cleaned.startswith(("-", "•")):
             cleaned = cleaned.lstrip("-•").strip()
         if cleaned:
-            bullets.append(cleaned[:240])
-    if not bullets:
-        return None, summary_meta
-    return bullets[:3], summary_meta
+            cleaned_lines.append(cleaned[:240])
+
+    if not cleaned_lines:
+        return []
+
+    likely_issue: str | None = None
+    why_likely: str | None = None
+    unlabeled: list[str] = []
+    for line in cleaned_lines:
+        lowered = line.lower()
+        if lowered.startswith("likely issue:"):
+            likely_issue = f"Likely issue: {line.split(':', 1)[1].strip()}"
+        elif lowered.startswith("why this is likely:"):
+            why_likely = f"Why this is likely: {line.split(':', 1)[1].strip()}"
+        else:
+            unlabeled.append(line)
+
+    if likely_issue is None and unlabeled:
+        likely_issue = f"Likely issue: {unlabeled.pop(0)}"
+    if why_likely is None and unlabeled:
+        why_likely = f"Why this is likely: {unlabeled.pop(0)}"
+
+    out = [item for item in [likely_issue, why_likely] if item]
+    return out[:2]
+
+
+def _clean_ticket_evidence_line(value: str) -> str:
+    text = str(value or "").strip()
+    text = re.sub(r"^(item number|invoice number|title|background)\s*:\s*", "", text, flags=re.IGNORECASE)
+    text = " ".join(text.split())
+    if not text:
+        return ""
+    if text.upper() == text:
+        text = text.lower()
+    text = re.sub(r"\bwas subbed\b", "was substituted", text, flags=re.IGNORECASE)
+    text = re.sub(r"\bsubbed\b", "substituted", text, flags=re.IGNORECASE)
+    text = re.sub(r"\bpricing not matched\b", "pricing did not match", text, flags=re.IGNORECASE)
+    text = re.sub(r"\bprice not matched\b", "price did not match", text, flags=re.IGNORECASE)
+    text = re.sub(r"\bnot matched\b", "did not match", text, flags=re.IGNORECASE)
+    return text.strip(" .")
+
+
+def _extract_summary_item_number(samples: list[dict[str, str]], evidence_lines: list[str]) -> str:
+    for sample in samples:
+        item_number = str(sample.get("item_number") or "").strip()
+        if item_number:
+            return item_number
+    item_line = next((line for line in evidence_lines if line.lower().startswith("item number:")), "")
+    if item_line:
+        return _clean_ticket_evidence_line(item_line)
+    return ""
+
+
+def _pick_primary_evidence_line(evidence_lines: list[str]) -> str:
+    def score(line: str) -> tuple[int, int]:
+        lowered = line.lower()
+        keywords = [
+            "price",
+            "pricing",
+            "match",
+            "mismatch",
+            "substituted",
+            "subbed",
+            "wrong",
+            "incorrect",
+            "billed",
+            "ppd",
+            "approval",
+        ]
+        return (sum(1 for keyword in keywords if keyword in lowered), len(line))
+
+    candidates = [
+        line
+        for line in evidence_lines
+        if _clean_ticket_evidence_line(line)
+        and not line.lower().startswith(("item number:", "invoice number:", "title:"))
+    ]
+    if not candidates:
+        return ""
+    return max(candidates, key=score)
+
+
+def _synthesize_ticket_summary_from_samples(
+    samples: list[dict[str, str]],
+    evidence_lines: list[str],
+) -> list[str]:
+    primary_line = _pick_primary_evidence_line(evidence_lines)
+    cleaned = _clean_ticket_evidence_line(primary_line)
+    if not cleaned:
+        return []
+
+    item_number = _extract_summary_item_number(samples, evidence_lines)
+    likely_issue_text = ""
+    substitution_match = re.match(
+        r"(?P<sub_item>[A-Z0-9-]+)\s+was substituted(?:\s+and)?\s+pricing did not match",
+        cleaned,
+        flags=re.IGNORECASE,
+    )
+    if substitution_match and item_number:
+        substituted_item = substitution_match.group("sub_item").upper()
+        likely_issue_text = (
+            f"item {item_number} appears tied to substituted item {substituted_item}, and the pricing did not match."
+        )
+    else:
+        if item_number and item_number not in cleaned:
+            likely_issue_text = f"item {item_number} investigation points to {cleaned}."
+        else:
+            likely_issue_text = f"{cleaned}."
+
+    evidence_clause = cleaned.rstrip(".")
+    if len(samples) > 1:
+        why_text = (
+            f"the reviewed notes explicitly reference {evidence_clause} across {len(samples)} unique note bodies."
+        )
+    else:
+        why_text = f"the reviewed note explicitly states that {evidence_clause}."
+
+    likely_issue = f"Likely issue: {likely_issue_text[0].upper()}{likely_issue_text[1:]}" if likely_issue_text else ""
+    why_likely = f"Why this is likely: {why_text[0].upper()}{why_text[1:]}" if why_text else ""
+    return [item for item in [likely_issue, why_likely] if item]
+
+
+def _is_low_signal_ticket_summary(bullets: list[str]) -> bool:
+    low_signal_prefixes = ("item number:", "invoice number:", "title:", "background:")
+    for bullet in bullets:
+        body = bullet.split(":", 1)[1].strip() if ":" in bullet else bullet.strip()
+        if body.lower().startswith(low_signal_prefixes):
+            return True
+    return False
 
 
 def _fallback_ticket_note_summary(
@@ -388,17 +521,27 @@ def _fallback_ticket_note_summary(
     primary_body = samples[0].get("body") or ""
     bullets, _ = _summarize_note_body(primary_body)
     if bullets:
-        return bullets[:3]
+        coerced = _coerce_ticket_summary_bullets(bullets)
+        if coerced and not _is_low_signal_ticket_summary(coerced):
+            return coerced
+        synthesized = _synthesize_ticket_summary_from_samples(samples, bullets)
+        if synthesized:
+            return synthesized
+        if coerced:
+            return coerced
 
     lines = [line.strip() for line in primary_body.splitlines() if line.strip()]
+    synthesized = _synthesize_ticket_summary_from_samples(samples, lines)
+    if synthesized:
+        return synthesized
     out: list[str] = []
     for line in lines:
         if line.lower() in {"background:", "order details", "price trace", "order history", "price history", "miscellaneous", "usage"}:
             continue
         out.append(line[:200])
-        if len(out) >= 3:
+        if len(out) >= 2:
             break
-    return out[:3]
+    return _coerce_ticket_summary_bullets(out)
 
 
 def intent_investigation_notes(query: str, df: pd.DataFrame):
@@ -497,14 +640,12 @@ def intent_investigation_notes(query: str, df: pd.DataFrame):
     if not summary_bullets:
         summary_bullets = _fallback_ticket_note_summary(samples)
 
-    message_lines = [
-        f"{mismatch_prefix}Here are the investigation notes for ticket **{ticket or 'N/A'}**.",
-        "",
-    ]
-    if summary_bullets:
-        message_lines.append("### Key takeaways")
-        for bullet in summary_bullets:
-            message_lines.append(f"- {bullet}")
+    message_lines: list[str] = []
+    if mismatch_prefix:
+        message_lines.append(mismatch_prefix.rstrip())
+        message_lines.append("")
+    if not summary_bullets:
+        message_lines.append(f"Here are the investigation notes for ticket **{ticket or 'N/A'}**.")
         message_lines.append("")
 
     unique_count = len(samples)
@@ -517,13 +658,9 @@ def intent_investigation_notes(query: str, df: pd.DataFrame):
         message_lines.append("Relevant notes reviewed:")
         for item in samples[:4]:
             combo = item.get("combo_key") or "N/A"
-            title = item.get("title") or "N/A"
-            updated = item.get("updated_at") or "N/A"
             command = f"Show investigation note for combo {combo}"
             action_token = f"ask:{quote(command)}|Open note"
-            message_lines.append(
-                f"- **{combo}** — {title} (Updated: {updated}) • `{action_token}`"
-            )
+            message_lines.append(f"- **{combo}** • `{action_token}`")
         remaining = max(total_count - len(samples[:4]), 0)
         if remaining:
             message_lines.append(f"- Plus **{remaining}** additional related note(s).")
@@ -531,7 +668,7 @@ def intent_investigation_notes(query: str, df: pd.DataFrame):
     meta: dict[str, Any] = {"show_table": False}
     if summary_bullets:
         meta["note_summary"] = {
-            "bullets": summary_bullets[:3],
+            "bullets": summary_bullets[:2],
             "disclaimer": "Generated by LLM" if summary_meta.get("source") else "Generated from note evidence",
             "source": summary_meta.get("source"),
             "model": summary_meta.get("model"),

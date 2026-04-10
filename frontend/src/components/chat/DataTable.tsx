@@ -1,5 +1,6 @@
 import React, { useState, useMemo } from 'react';
 import { Download, Table as TableIcon, Search, X, ChevronUp, ChevronDown, ChevronsUpDown } from 'lucide-react';
+import { useToast } from './Toast';
 
 type Column = { key: string; label: string };
 
@@ -7,6 +8,7 @@ export type DataTableProps = {
     rows: Record<string, unknown>[];
     meta?: { columns?: string[]; csv_filename?: string; csv_rows?: Record<string, unknown>[]; csv_row_count?: number };
     onDrillDown?: (type: 'ticket' | 'customer' | 'item', value: string) => void;
+    timezone?: string;
 };
 
 // ─── Column definitions ───────────────────────────────────────────────────────
@@ -43,7 +45,7 @@ function resolveColumns(columns?: string[]): Column[] {
 
 // ─── Formatting utilities ─────────────────────────────────────────────────────
 
-const INDY_TZ = 'America/Indiana/Indianapolis';
+const DEFAULT_TZ = 'America/Indiana/Indianapolis';
 const DATE_ONLY_KEYS = new Set(['date']);
 const DATETIME_KEYS = new Set(['last_status_time', 'last_status', 'last_updated', 'last_updated_at', 'update_timestamp', 'updated_at', 'created_at']);
 
@@ -60,20 +62,20 @@ function parseDate(v: unknown): Date | null {
     return null;
 }
 
-function fmtDate(v: unknown): string {
+function fmtDate(v: unknown, tz = DEFAULT_TZ): string {
     if (typeof v === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(v.trim())) return v.trim();
     const d = parseDate(v);
     if (!d) return String(v);
-    return new Intl.DateTimeFormat('en-CA', { timeZone: INDY_TZ, year: 'numeric', month: '2-digit', day: '2-digit' }).format(d);
+    return new Intl.DateTimeFormat('en-CA', { timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit' }).format(d);
 }
 
-function fmtDateTime(v: unknown): string {
+function fmtDateTime(v: unknown, tz = DEFAULT_TZ): string {
     if (typeof v === 'string' && /^\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}(?::\d{2})?$/.test(v.trim()))
         return v.trim().slice(0, 16);
     const d = parseDate(v);
     if (!d) return String(v);
     const parts = new Intl.DateTimeFormat('en-CA', {
-        timeZone: INDY_TZ, year: 'numeric', month: '2-digit', day: '2-digit',
+        timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit',
         hour: '2-digit', minute: '2-digit', hour12: false,
     }).formatToParts(d);
     const lk = Object.fromEntries(parts.map(p => [p.type, p.value]));
@@ -137,7 +139,8 @@ const DRILLDOWN_COLS: Record<string, 'ticket' | 'customer' | 'item'> = {
 
 // ─── Component ────────────────────────────────────────────────────────────────
 
-export function DataTable({ rows, meta, onDrillDown }: DataTableProps) {
+export function DataTable({ rows, meta, onDrillDown, timezone = DEFAULT_TZ }: DataTableProps) {
+    const { addToast } = useToast();
     const columns = useMemo(() => resolveColumns(meta?.columns), [meta?.columns]);
     const [filter, setFilter] = useState('');
     const [sortKey, setSortKey] = useState<string | null>(null);
@@ -208,7 +211,7 @@ export function DataTable({ rows, meta, onDrillDown }: DataTableProps) {
 
                     {csvFilename && (
                         <button
-                            onClick={() => downloadCsv(csvSource, csvFilename, columns)}
+                            onClick={() => { downloadCsv(csvSource, csvFilename, columns); addToast(`Downloaded ${csvFilename}`, 'success'); }}
                             className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-cyan-500/10 hover:bg-cyan-500/20 border border-cyan-500/20 text-xs font-medium text-cyan-300 transition-colors whitespace-nowrap"
                         >
                             <Download className="w-3.5 h-3.5" />
@@ -218,7 +221,9 @@ export function DataTable({ rows, meta, onDrillDown }: DataTableProps) {
                 </div>
             </div>
 
-            {/* Table */}
+            {/* Table — right-edge fade hint on mobile signals horizontal scroll */}
+            <div className="relative">
+            <div className="sm:hidden absolute inset-y-0 right-0 w-8 bg-gradient-to-l from-obsidian-950/80 to-transparent pointer-events-none z-10" />
             <div className="overflow-x-auto overflow-y-auto max-h-[520px] overscroll-x-contain">
                 {sorted.length === 0 ? (
                     <div className="py-12 text-center text-sm text-slate-500">
@@ -276,9 +281,9 @@ export function DataTable({ rows, meta, onDrillDown }: DataTableProps) {
                                                 </button>
                                             );
                                         } else if (DATE_ONLY_KEYS.has(nk)) {
-                                            content = <span className="font-mono text-sm">{fmtDate(value)}</span>;
+                                            content = <span className="font-mono text-sm">{fmtDate(value, timezone)}</span>;
                                         } else if (DATETIME_KEYS.has(nk)) {
-                                            content = <span className="font-mono text-sm">{fmtDateTime(value)}</span>;
+                                            content = <span className="font-mono text-sm">{fmtDateTime(value, timezone)}</span>;
                                         } else if (col.key === 'Amount' || col.key === 'Credit Request Total') {
                                             content = <span className="text-emerald-400 font-medium font-mono text-sm">{fmtNumber(value)}</span>;
                                         } else if (col.key === 'Z Score' || col.key === 'z_score') {
@@ -319,6 +324,7 @@ export function DataTable({ rows, meta, onDrillDown }: DataTableProps) {
                         </tbody>
                     </table>
                 )}
+            </div>
             </div>
         </div>
     );

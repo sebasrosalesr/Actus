@@ -12,6 +12,7 @@ import { AutoModePipeline, AutoModeLoading } from './chat/AutoModePipeline';
 import { ErrorCard } from './chat/ErrorCard';
 import { ChatInput } from './chat/ChatInput';
 import { ChatSidebar } from './chat/ChatSidebar';
+import { ToastProvider } from './chat/Toast';
 import type { Message, AskMode, RootCausePayload, UserContext } from './chat/types';
 import { getContextualSuggestions } from './chat/types';
 
@@ -127,6 +128,8 @@ export default function ActusChat({ userEmail, onLogout }: ActusChatProps) {
     const [expandedSystemUpdateIds, setExpandedSystemUpdateIds] = useState<Record<string, boolean>>({});
     const [pendingFollowup, setPendingFollowup] = useState<{ intent: string; prefix: string } | null>(null);
     const [pendingChoices, setPendingChoices] = useState<Array<{ label: string; prefix: string }> | null>(null);
+    const [showScrollToBottom, setShowScrollToBottom] = useState(false);
+    const [timezone, setTimezone] = useState(() => localStorage.getItem('actusTimezone') || 'America/Indiana/Indianapolis');
 
     const messagesEndRef = useRef<HTMLDivElement>(null);
     const lastMessageRef = useRef<HTMLDivElement>(null);
@@ -228,12 +231,29 @@ export default function ActusChat({ userEmail, onLogout }: ActusChatProps) {
         return () => { mounted = false; };
     }, []);
 
-    const renderChartPlaceholder = (label: string) => (
-        <div className="flex items-center justify-center h-full text-sm text-slate-400 bg-slate-950/40 border border-white/5 rounded-lg">{label}</div>
-    );
-
     const renderCreditAmountPlot = (data: Array<any>) => {
-        if (!chartLib) return renderChartPlaceholder(chartLibError ? 'Chart library unavailable.' : 'Loading chart…');
+        if (!chartLib) {
+            if (chartLibError) return (
+                <div className="flex items-center justify-center h-full text-sm text-slate-500 bg-slate-950/40 border border-white/5 rounded-lg">
+                    Chart unavailable
+                </div>
+            );
+            // Shimmer skeleton
+            return (
+                <div className="h-full w-full flex flex-col justify-end gap-2 p-3 animate-pulse">
+                    <div className="flex items-end gap-1.5 flex-1">
+                        {[42, 65, 38, 80, 52, 71, 44, 88, 60, 74, 50, 79].map((h, i) => (
+                            <div key={i} className="flex-1 rounded-t bg-white/[0.05]" style={{ height: `${h}%` }} />
+                        ))}
+                    </div>
+                    <div className="flex gap-3 pt-1">
+                        {[1, 2, 3, 4, 5, 6].map(i => (
+                            <div key={i} className="flex-1 h-1.5 rounded-full bg-white/[0.04]" />
+                        ))}
+                    </div>
+                </div>
+            );
+        }
         const { ResponsiveContainer, ComposedChart, Bar, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend } = chartLib;
         return (
             <ResponsiveContainer width="100%" height="100%">
@@ -295,6 +315,17 @@ export default function ActusChat({ userEmail, onLogout }: ActusChatProps) {
             container.scrollTo({ top: Math.max(target, 0), behavior: 'smooth' });
         });
     }, [messages]);
+
+    useEffect(() => {
+        const container = scrollContainerRef.current;
+        if (!container) return;
+        const onScroll = () => {
+            const distFromBottom = container.scrollHeight - container.scrollTop - container.clientHeight;
+            setShowScrollToBottom(distFromBottom > 300);
+        };
+        container.addEventListener('scroll', onScroll, { passive: true });
+        return () => container.removeEventListener('scroll', onScroll);
+    }, []);
 
     // ── Note collapse ──────────────────────────────────────────────────────────
 
@@ -447,12 +478,13 @@ export default function ActusChat({ userEmail, onLogout }: ActusChatProps) {
     // ─────────────────────────────────────────────────────────────────────────
 
     return (
+        <ToastProvider>
         <div className="flex flex-col h-screen bg-obsidian-950 text-slate-100 overflow-hidden font-sans selection:bg-cyan-500/30">
-            {/* Background orbs */}
+            {/* Background orbs — suppressed for users who prefer reduced motion */}
             <div className="fixed inset-0 overflow-hidden pointer-events-none -z-0">
-                <div className="absolute top-[10%] left-[-5%] w-[600px] h-[600px] bg-indigo-900/10 rounded-full blur-[120px] animate-pulse-slow" />
-                <div className="absolute bottom-[10%] right-[-5%] w-[500px] h-[500px] bg-cyan-900/10 rounded-full blur-[100px] animate-float" style={{ animationDelay: '2s' }} />
-                <div className="absolute top-[40%] left-[60%] w-[400px] h-[400px] bg-violet-900/10 rounded-full blur-[100px] animate-pulse-slow opacity-50" />
+                <div className="absolute top-[10%] left-[-5%] w-[600px] h-[600px] bg-indigo-900/10 rounded-full blur-[120px] motion-safe:animate-pulse-slow" />
+                <div className="absolute bottom-[10%] right-[-5%] w-[500px] h-[500px] bg-cyan-900/10 rounded-full blur-[100px] motion-safe:animate-float" style={{ animationDelay: '2s' }} />
+                <div className="absolute top-[40%] left-[60%] w-[400px] h-[400px] bg-violet-900/10 rounded-full blur-[100px] motion-safe:animate-pulse-slow opacity-50" />
             </div>
 
             {/* ── Header ─────────────────────────────────────────────────────── */}
@@ -497,6 +529,8 @@ export default function ActusChat({ userEmail, onLogout }: ActusChatProps) {
 
                         <button
                             onClick={() => setIsSidebarOpen(o => !o)}
+                            aria-label={isSidebarOpen ? 'Close sidebar' : 'Open sidebar'}
+                            aria-expanded={isSidebarOpen}
                             className="p-2.5 hover:bg-white/[0.05] rounded-xl transition-all duration-300 text-slate-400 hover:text-white border border-transparent hover:border-white/[0.05] group"
                         >
                             <Menu className="w-5 h-5 group-hover:scale-110 transition-transform" />
@@ -516,11 +550,25 @@ export default function ActusChat({ userEmail, onLogout }: ActusChatProps) {
                 onSendMessage={(query, opts) => sendMessage(query, { showUser: true, bypassPending: opts?.bypassPending, modeOverride: opts?.modeOverride })}
                 onClearMessages={clearMessages}
                 hasMessages={messages.length > 0}
+                timezone={timezone}
+                onTimezoneChange={(tz) => { setTimezone(tz); localStorage.setItem('actusTimezone', tz); }}
             />
 
             {/* Scroll edge fades */}
             <div className="fixed top-[88px] inset-x-0 h-10 bg-gradient-to-b from-obsidian-950 to-transparent pointer-events-none z-40" />
             <div className="fixed bottom-0 inset-x-0 h-52 bg-gradient-to-t from-obsidian-950/95 to-transparent pointer-events-none z-40" />
+
+            {/* ── Jump-to-latest button ──────────────────────────────────────── */}
+            {showScrollToBottom && activeView === 'chat' && (
+                <button
+                    onClick={() => scrollContainerRef.current?.scrollTo({ top: scrollContainerRef.current.scrollHeight, behavior: 'smooth' })}
+                    aria-label="Scroll to latest message"
+                    className="fixed bottom-36 left-1/2 -translate-x-1/2 z-50 flex items-center gap-2 px-4 py-2 rounded-full bg-obsidian-950/90 border border-white/[0.1] text-xs font-semibold text-slate-300 hover:text-white hover:border-cyan-500/30 shadow-xl backdrop-blur-xl transition-all duration-200 animate-fade-in"
+                >
+                    <ChevronDown className="w-3.5 h-3.5" />
+                    Latest
+                </button>
+            )}
 
             {/* ── Message area ───────────────────────────────────────────────── */}
             <div ref={scrollContainerRef} className="flex-1 overflow-y-auto pt-[120px] pb-40 scroll-smooth">
@@ -825,8 +873,10 @@ export default function ActusChat({ userEmail, onLogout }: ActusChatProps) {
                                                 <div className="text-xs text-slate-400 mb-4">
                                                     Window: {message.meta.chart.window} · Bucketing: {message.meta.chart.bucket}
                                                 </div>
-                                                <div className="h-[440px] min-w-[900px] w-full overflow-x-auto">
-                                                    {renderCreditAmountPlot(message.meta.chart.data)}
+                                                <div className="overflow-x-auto -mx-2">
+                                                    <div className="h-[440px] min-w-[640px] w-full px-2">
+                                                        {renderCreditAmountPlot(message.meta.chart.data)}
+                                                    </div>
                                                 </div>
                                             </div>
                                         )}
@@ -919,6 +969,7 @@ export default function ActusChat({ userEmail, onLogout }: ActusChatProps) {
                                             <DataTable
                                                 rows={message.rows}
                                                 meta={message.meta}
+                                                timezone={timezone}
                                                 onDrillDown={(type, value) => {
                                                     const normalizedValue = String(value || '').trim();
                                                     const queries: Record<'ticket' | 'customer' | 'item', string> = {
@@ -967,5 +1018,6 @@ export default function ActusChat({ userEmail, onLogout }: ActusChatProps) {
                 />
             )}
         </div>
+        </ToastProvider>
     );
 }
